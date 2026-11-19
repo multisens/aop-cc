@@ -5,8 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
-
-	"github.com/multisens/aop-cc/internal/proxy"
+	"time"
 )
 
 // Runs against a Redis with the tv30 library loaded, at TV30_REDIS_TEST
@@ -21,8 +20,8 @@ func TestContractFunctions(t *testing.T) {
 	defer store.Close()
 
 	origins := []string{
-		proxy.Origins{AppsDomain: "apps.localhost", PublicPort: 8081}.ContextOrigin("urn:tv30:app-context:1"),
-		proxy.Origins{AppsDomain: "tv30.example", PublicPort: 80}.ContextOrigin("Ação Ü!"),
+		"http://ctx-0123456789abcdef.apps.localhost:8081",
+		"http://ctx-fedcba9876543210.tv30.example",
 	}
 	for _, origin := range origins {
 		if err := store.OriginRegister(ctx, origin, "urn:tv30:service:1"); err != nil {
@@ -49,6 +48,40 @@ func TestContractFunctions(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.OriginsClear(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	const appContextID = "urn:tv30:ctx:contract"
+	file := CachedFile{ContentType: "text/html", LastModified: time.UnixMilli(1763000000000), Body: []byte("<p>\x00\xff</p>")}
+	now := time.UnixMilli(1763000001000)
+	stored, evicted, err := store.CachePut(ctx, appContextID, "urn:tv30:service:1", "index.html", file, now,
+		Quota{ByService: 1000, Total: 1000})
+	if err != nil || !stored || len(evicted) != 0 {
+		t.Fatalf("put: %v %v %v", stored, evicted, err)
+	}
+	stored, _, err = store.CachePut(ctx, appContextID, "urn:tv30:service:1", "big.bin", file, now,
+		Quota{ByService: 10, Total: 1000})
+	if err != nil || stored {
+		t.Fatalf("over the quota: %v %v", stored, err)
+	}
+	read, found, err := store.CacheFile(ctx, appContextID, "index.html")
+	if err != nil || !found || string(read.Body) != string(file.Body) || !read.LastModified.Equal(file.LastModified) ||
+		read.ContentType != file.ContentType {
+		t.Fatalf("read: %+v %v %v", read, found, err)
+	}
+	if _, found, err := store.CacheFile(ctx, appContextID, "nada"); err != nil || found {
+		t.Fatalf("absent file: %v %v", found, err)
+	}
+	if paths, err := store.CachePaths(ctx, appContextID); err != nil || len(paths) != 1 {
+		t.Fatalf("paths: %v %v", paths, err)
+	}
+	if err := store.CacheTouch(ctx, appContextID, now); err != nil {
+		t.Fatal(err)
+	}
+	if removed, err := store.CacheClearBefore(ctx, appContextID, file.LastModified); err != nil || removed != 0 {
+		t.Fatalf("clear before: %d %v", removed, err)
+	}
+	if err := store.CacheRemove(ctx, appContextID); err != nil {
 		t.Fatal(err)
 	}
 }

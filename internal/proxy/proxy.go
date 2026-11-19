@@ -2,7 +2,8 @@
 // channel of each service with a carousel, the objects of the carousel of the
 // tuned service under the service family and under the origin of each
 // Application Context ID, subject to the count of the passes, and emits the
-// object events.
+// object events. Under the origin of an Application Context ID, what the
+// carousel does not offer now comes from the Application Context Cache.
 package proxy
 
 import (
@@ -16,12 +17,19 @@ import (
 	"github.com/multisens/aop-cc/internal/carousel"
 	"github.com/multisens/aop-cc/internal/emission"
 	"github.com/multisens/aop-cc/internal/origin"
+	"github.com/multisens/aop-cc/internal/storage"
 	"github.com/multisens/aop-cc/internal/topics"
 )
 
 // EventPublisher publishes a message that is not retained.
 type EventPublisher interface {
 	PublishEvent(ctx context.Context, topic string, payload []byte) error
+}
+
+// CacheReader reads a file of the Application Context Cache; false when it
+// is not there.
+type CacheReader interface {
+	File(ctx context.Context, appContextID string, location string) (storage.CachedFile, bool, error)
 }
 
 // Origins are where the browser reaches the proxy: the domain of the
@@ -37,6 +45,7 @@ type Proxy struct {
 	now         func() time.Time
 	events      EventPublisher
 	origins     Origins
+	cache       CacheReader
 	mu          sync.RWMutex
 	descriptors map[int]emission.Descriptor
 	stsids      map[int][]byte
@@ -68,12 +77,14 @@ type wireTuning struct {
 }
 
 // New gives a Proxy without anything received.
-func New(client *origin.Client, now func() time.Time, events EventPublisher, origins Origins) *Proxy {
+func New(client *origin.Client, now func() time.Time, events EventPublisher, origins Origins,
+	cache CacheReader) *Proxy {
 	return &Proxy{
 		origin:      client,
 		now:         now,
 		events:      events,
 		origins:     origins,
+		cache:       cache,
 		descriptors: map[int]emission.Descriptor{},
 		stsids:      map[int][]byte{},
 		carousels:   map[int]carousel.Carousel{},

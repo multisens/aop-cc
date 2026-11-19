@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/multisens/aop-cc/internal/origin"
+	"github.com/multisens/aop-cc/internal/storage"
 )
 
 // The emission side served by an httptest server that counts requests, a
@@ -40,7 +41,13 @@ type fixture struct {
 	events  *fakeEvents
 	url     string
 	proxy   *Proxy
+	cache   *fakeCache
 	instant time.Time
+}
+
+// Files by appContextId + " " + location.
+type fakeCache struct {
+	files map[string]storage.CachedFile
 }
 
 const (
@@ -148,7 +155,8 @@ func setup(t *testing.T) *fixture {
 	t.Cleanup(server.Close)
 	f := &fixture{origin: side, events: &fakeEvents{}, url: server.URL, instant: epoch.Add(7500 * time.Millisecond)}
 	origins := Origins{AppsDomain: appsDomain, PublicPort: publicPort}
-	f.proxy = New(origin.New(), func() time.Time { return f.instant }, f.events, origins)
+	f.cache = &fakeCache{files: map[string]storage.CachedFile{}}
+	f.proxy = New(origin.New(), func() time.Time { return f.instant }, f.events, origins, f.cache)
 	return f
 }
 
@@ -166,6 +174,11 @@ func (f *fixture) receiveDescriptor() {
 		`{"contentLocation":"nota.txt","order":1,"lastModified":"2026-01-01T00:00:00Z"}]}]}`,
 		serviceID, f.url, serviceID, epoch.Format(time.RFC3339), f.url, serviceID, signalingMs)
 	f.proxy.Receive(fmt.Sprintf("tlm/emission/%d", serviceID), []byte(payload))
+}
+
+func (c *fakeCache) File(ctx context.Context, appContextID string, location string) (storage.CachedFile, bool, error) {
+	file, found := c.files[appContextID+" "+location]
+	return file, found, nil
 }
 
 // Descriptor, S-TSID and the tuning at tunedAt.
@@ -487,5 +500,25 @@ func TestEventsOfTheTunedService(t *testing.T) {
 	}
 	if expired := f.events.of("tlm/object/1002/expired"); strings.Join(expired, " ") != "marca.txt" {
 		t.Fatalf("expired until 16 s: %v", expired)
+	}
+}
+
+func TestApplicationFamilyServesTheCacheWhenTheCarouselDoesNot(t *testing.T) {
+	f := setup(t)
+	f.arm(epoch)
+	stored := storage.CachedFile{ContentType: "text/plain", LastModified: at(-time.Hour), Body: []byte("guardado")}
+	f.cache.files[contextA+" aviso.txt"] = stored
+	f.cache.files[contextA+" extra.txt"] = stored
+	// Before the first pass of aviso.txt, and a path outside the carousel.
+	f.instant = at(time.Second)
+	for _, path := range []string{"/aviso.txt", "/extra.txt"} {
+		response := f.getApp(contextA, path)
+		if response.Code != http.StatusOK || response.Body.String() != "guardado" ||
+			response.Header().Get("Last-Modified") != stored.LastModified.UTC().Format(http.TimeFormat) {
+			t.Fatalf("%s: %d %q", path, response.Code, response.Body.String())
+		}
+	}
+	if response := f.getApp(contextA, "/nada.txt"); response.Code != http.StatusNotFound {
+		t.Fatalf("not in the carousel nor in the cache: %d", response.Code)
 	}
 }

@@ -32,13 +32,20 @@ type Store interface {
 	ClearCurrentApp(ctx context.Context) error
 }
 
+// Completion says whether the Application Context Cache has every object of
+// an Application Context ID.
+type Completion interface {
+	Complete(ctx context.Context, appContextID string) (bool, error)
+}
+
 // Manager keeps what it subscribes to and the application it launched.
 type Manager struct {
-	publisher Publisher
-	store     Store
-	origins   proxy.Origins
-	now       func() time.Time
-	mu        sync.Mutex
+	publisher  Publisher
+	store      Store
+	completion Completion
+	origins    proxy.Origins
+	now        func() time.Time
+	mu         sync.Mutex
 	// globalServiceId of each serviceId, by the SLT of each RF channel.
 	contexts map[int]map[int]string
 	balds    map[int][]Entry
@@ -128,17 +135,19 @@ type presentList struct {
 const idleWait = time.Hour
 
 // New gives a Manager without anything received.
-func New(publisher Publisher, store Store, origins proxy.Origins, now func() time.Time) *Manager {
+func New(publisher Publisher, store Store, completion Completion, origins proxy.Origins,
+	now func() time.Time) *Manager {
 	return &Manager{
-		publisher: publisher,
-		store:     store,
-		origins:   origins,
-		now:       now,
-		contexts:  map[int]map[int]string{},
-		balds:     map[int][]Entry{},
-		available: map[string]bool{},
-		codes:     map[string]string{},
-		changed:   make(chan struct{}, 1),
+		publisher:  publisher,
+		store:      store,
+		completion: completion,
+		origins:    origins,
+		now:        now,
+		contexts:   map[int]map[int]string{},
+		balds:      map[int][]Entry{},
+		available:  map[string]bool{},
+		codes:      map[string]string{},
+		changed:    make(chan struct{}, 1),
 	}
 }
 

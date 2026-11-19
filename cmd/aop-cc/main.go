@@ -1,6 +1,6 @@
 // Command aop-cc is the Common Core component of the platform: the
-// acquisition of the transport layer signaling, the object proxy and the
-// application lifecycle manager.
+// acquisition of the transport layer signaling, the object proxy, the
+// Application Context Cache and the application lifecycle manager.
 package main
 
 import (
@@ -19,6 +19,7 @@ import (
 
 	"github.com/multisens/aop-cc/internal/acquisition"
 	"github.com/multisens/aop-cc/internal/broker"
+	"github.com/multisens/aop-cc/internal/cache"
 	"github.com/multisens/aop-cc/internal/config"
 	"github.com/multisens/aop-cc/internal/lifecycle"
 	"github.com/multisens/aop-cc/internal/origin"
@@ -49,7 +50,17 @@ func main() {
 	store := storage.New(settings.RedisAddress)
 	defer store.Close()
 	origins := proxy.Origins{AppsDomain: settings.AppsDomain, PublicPort: settings.PublicPort}
-	objectProxy := proxy.New(origin.New(), time.Now, client, origins)
+	proxyBase := loopbackURL(settings.ObjectProxyPort)
+	cacheClient := cache.NewClient(loopbackURL(settings.CachePort))
+	quota := storage.Quota{ByService: settings.CacheQuota, Total: settings.CacheTotal}
+	contextCache := cache.New(store, cache.NewProxyFetcher(proxyBase), quota, time.Now)
+	cacheServer, err := listen(settings.CachePort, contextCache.Handler())
+	if err != nil {
+		slog.Error("application context cache not started", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("application context cache started", "port", settings.CachePort)
+	objectProxy := proxy.New(origin.New(), time.Now, client, origins, cacheClient)
 	server, err := listen(settings.ObjectProxyPort, objectProxy.Handler())
 	if err != nil {
 		slog.Error("object proxy not started", "error", err)
@@ -57,7 +68,6 @@ func main() {
 	}
 	slog.Info("object proxy started", "port", settings.ObjectProxyPort)
 
-	proxyBase := proxyBaseURL(settings.ObjectProxyPort)
 	signalingAcquisition := acquisition.New(settings.SignalingBaseURL, proxyBase, client, time.Now)
 	for _, filter := range proxy.Filters() {
 		client.Subscribe(broker.Subscription{Filter: filter, Receive: objectProxy.Receive})
@@ -65,7 +75,10 @@ func main() {
 	for _, filter := range []string{topics.LLSFilter(), topics.SLSFilter(), topics.EmissionFilter()} {
 		client.Subscribe(broker.Subscription{Filter: filter, Receive: signalingAcquisition.Receive})
 	}
-	lifecycleManager := lifecycle.New(client, store, origins, time.Now)
+	for _, filter := range cache.Filters() {
+		client.Subscribe(broker.Subscription{Filter: filter, Receive: contextCache.Receive})
+	}
+	lifecycleManager := lifecycle.New(client, store, cacheClient, origins, time.Now)
 	for _, filter := range lifecycle.Filters() {
 		client.Subscribe(broker.Subscription{Filter: filter, Receive: lifecycleManager.Receive})
 	}
@@ -75,15 +88,16 @@ func main() {
 	}
 	if err := client.AwaitConnection(ctx); err != nil {
 		slog.Info("stopped before connecting to the MQTT broker")
-		shutdown(server, client)
+		shutdown([]*http.Server{server, cacheServer}, client)
 		return
 	}
 	slog.Info("acquisition started", "signaling", settings.SignalingBaseURL.String())
 	go objectProxy.RunEvents(ctx)
+	go contextCache.Run(ctx)
 	go lifecycleManager.Run(ctx)
 	signalingAcquisition.Run(ctx)
 
-	shutdown(server, client)
+	shutdown([]*http.Server{server, cacheServer}, client)
 	slog.Info("aop-cc stopped")
 }
 
@@ -98,15 +112,15 @@ func listen(port int, handler http.Handler) (*http.Server, error) {
 	go func() {
 		err := server.Serve(listener)
 		if !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("object proxy stopped", "error", err)
+			slog.Error("HTTP server stopped", "port", port, "error", err)
 			os.Exit(1)
 		}
 	}()
 	return server, nil
 }
 
-// The <comporta> of the object proxy of this process, on the loopback.
-func proxyBaseURL(port int) *url.URL {
+// The base of an HTTP server of this process, on the loopback.
+func loopbackURL(port int) *url.URL {
 	return &url.URL{
 		Scheme: "http",
 		Host:   net.JoinHostPort(loopbackHost, strconv.Itoa(port)),
@@ -114,11 +128,13 @@ func proxyBaseURL(port int) *url.URL {
 	}
 }
 
-func shutdown(server *http.Server, client *broker.Client) {
+func shutdown(servers []*http.Server, client *broker.Client) {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		slog.Error("object proxy shutdown failed", "error", err)
+	for _, server := range servers {
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			slog.Error("HTTP server shutdown failed", "error", err)
+		}
 	}
 	if err := client.Disconnect(shutdownCtx); err != nil {
 		slog.Error("MQTT disconnect failed", "error", err)

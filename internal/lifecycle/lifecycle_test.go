@@ -23,6 +23,10 @@ type fakePublisher struct {
 	messages []message
 }
 
+type fakeCompletion struct {
+	complete map[string]bool
+}
+
 type fakeStore struct {
 	origins map[string]string
 	current *storage.App
@@ -40,6 +44,8 @@ const (
 
 var testOrigins = proxy.Origins{AppsDomain: "apps.localhost", PublicPort: 8081}
 
+var completion = &fakeCompletion{complete: map[string]bool{}}
+
 var t0 = time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
 
 func (p *fakePublisher) Publish(ctx context.Context, topic string, payload []byte) error {
@@ -50,6 +56,10 @@ func (p *fakePublisher) Publish(ctx context.Context, topic string, payload []byt
 func (p *fakePublisher) PublishEvent(ctx context.Context, topic string, payload []byte) error {
 	p.messages = append(p.messages, message{topic: topic, payload: string(payload)})
 	return nil
+}
+
+func (c *fakeCompletion) Complete(ctx context.Context, appContextID string) (bool, error) {
+	return c.complete[appContextID], nil
 }
 
 func (s *fakeStore) OriginRegister(ctx context.Context, origin string, serviceContextID string) error {
@@ -83,7 +93,7 @@ func newTuned(t *testing.T, clock *time.Time) (*Manager, *fakePublisher, *fakeSt
 	t.Helper()
 	publisher := &fakePublisher{}
 	store := &fakeStore{origins: map[string]string{}}
-	manager := New(publisher, store, testOrigins, func() time.Time { return *clock })
+	manager := New(publisher, store, completion, testOrigins, func() time.Time { return *clock })
 	slt := fmt.Sprintf(`{"Service":[{"serviceId":%d,"globalServiceId":"%s"}]}`, serviceID, scid)
 	manager.Receive(topics.LLS(bsid, topics.SLT), []byte(slt))
 	tuning := fmt.Sprintf(`{"serviceId":%d,"rfChannelId":%d,"tunedAt":"%s"}`, serviceID, bsid, t0.Format(time.RFC3339))
@@ -341,7 +351,7 @@ func TestPresentApplications(t *testing.T) {
 func TestRunClearsWhatAPreviousRunLeft(t *testing.T) {
 	publisher := &fakePublisher{}
 	store := &fakeStore{origins: map[string]string{"http://old": scid}, current: &storage.App{AppID: appA}}
-	manager := New(publisher, store, testOrigins, time.Now)
+	manager := New(publisher, store, completion, testOrigins, time.Now)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	manager.Run(ctx)
@@ -356,5 +366,26 @@ func TestRunClearsWhatAPreviousRunLeft(t *testing.T) {
 	}
 	if !cleared[topics.GraphicsApplication()] || !cleared[topics.PresentApplications()] {
 		t.Fatalf("messages %v", publisher.messages)
+	}
+}
+
+func TestStoredAutostartWaitsForTheCacheComplete(t *testing.T) {
+	clock := t0
+	manager, publisher, _ := newTuned(t, &clock)
+	entry := fmt.Sprintf(`{"appId":"%s","appContextId":"%s","appType":"TV30-Ginga-HTML5","appName":"A",`+
+		`"bcastEntryPackageUrl":"app.pkg","bcastEntryPointUrl":"%s","controlCode":"STORED_AUTOSTART"}`,
+		appA, contextA, entryPoint)
+	receiveBald(manager, entry)
+	manager.mu.Lock()
+	next := manager.apply(context.Background())
+	manager.mu.Unlock()
+	if publisher.graphics() != "none" || !next.Equal(t0.Add(storedRecheck)) {
+		t.Fatalf("before complete: graphics %q, next %v", publisher.graphics(), next)
+	}
+	completion.complete[contextA] = true
+	defer delete(completion.complete, contextA)
+	manager.step()
+	if publisher.graphics() != testOrigins.ContextOrigin(contextA)+"/"+entryPoint {
+		t.Fatalf("graphics %q", publisher.graphics())
 	}
 }

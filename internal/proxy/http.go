@@ -87,16 +87,43 @@ func (p *Proxy) serveApplication(w http.ResponseWriter, r *http.Request, label s
 		return
 	}
 	if match == nil {
-		http.Error(w, "not in the carousel", http.StatusNotFound)
+		p.serveCached(w, r, appContextID, location, "not in the carousel nor in the cache")
 		return
 	}
 	pass, available := match.object.LastCompletePass(p.now(), tuning.TunedAt)
 	if !available {
-		http.Error(w, "not passed since the tuning, or expired", http.StatusNotFound)
+		p.serveCached(w, r, appContextID, location, "not passed since the tuning, or expired, and not in the cache")
 		return
 	}
 	match.pass = pass
 	p.serveFound(w, r, *match)
+}
+
+// The file of the Application Context Cache, with the Content-Type and the
+// Last-Modified it was stored with; 404 with reason when it is not there.
+func (p *Proxy) serveCached(w http.ResponseWriter, r *http.Request, appContextID string, location string,
+	reason string) {
+	file, found, err := p.cache.File(r.Context(), appContextID, location)
+	if err != nil {
+		slog.Error("application context cache not read", "appContextId", appContextID, "contentLocation", location,
+			"error", err)
+		http.Error(w, "application context cache failed", http.StatusBadGateway)
+		return
+	}
+	if !found {
+		http.Error(w, reason, http.StatusNotFound)
+		return
+	}
+	header := w.Header()
+	header.Set("Content-Type", file.ContentType)
+	header.Set("Access-Control-Allow-Origin", "*")
+	header.Set("Last-Modified", file.LastModified.UTC().Format(http.TimeFormat))
+	if notModified(r, file.LastModified) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	header.Set("Content-Length", strconv.Itoa(len(file.Body)))
+	writeBody(w, r, http.StatusOK, file.Body)
 }
 
 // A request to the service family.

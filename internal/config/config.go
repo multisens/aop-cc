@@ -22,6 +22,12 @@ type Config struct {
 	// it; AppsDomain, the domain of the origins by application context.
 	PublicPort int
 	AppsDomain string
+	// CachePort is the port of the routes of the Application Context Cache;
+	// CacheQuota and CacheTotal, its limits in bytes: by DTV service context
+	// and in total.
+	CachePort  int
+	CacheQuota int64
+	CacheTotal int64
 	LogLevel   slog.Level
 }
 
@@ -30,6 +36,10 @@ const (
 	defaultRedisPort = "6379"
 	maxPort          = 65535
 	maxDomainLength  = 253 - 64
+	// ABNT NBR 25608, 10.3.3, for the 4K@60fps receiver profiles: 112 MB by
+	// DTV service context and 500 MB in total.
+	defaultCacheQuota = 112_000_000
+	defaultCacheTotal = 500_000_000
 )
 
 // A DNS label: letters, digits and '-', not at the ends.
@@ -42,7 +52,8 @@ var logLevels = map[string]slog.Level{
 }
 
 // Load reads MQTT_HOST, REDIS_HOST, SIGNALING_BASE_URL, OBJECT_PROXY_PORT,
-// OBJECT_PROXY_PUBLIC_PORT, APPS_DOMAIN and LOG_LEVEL.
+// OBJECT_PROXY_PUBLIC_PORT, APPS_DOMAIN, CACHE_PORT, CACHE_QUOTA_BYTES,
+// CACHE_TOTAL_BYTES and LOG_LEVEL.
 func Load() (Config, error) {
 	mqttURL, err := mqttURL(os.Getenv("MQTT_HOST"))
 	if err != nil {
@@ -68,6 +79,18 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	cachePort, err := port("CACHE_PORT", os.Getenv("CACHE_PORT"))
+	if err != nil {
+		return Config{}, err
+	}
+	cacheQuota, err := bytesOr("CACHE_QUOTA_BYTES", os.Getenv("CACHE_QUOTA_BYTES"), defaultCacheQuota)
+	if err != nil {
+		return Config{}, err
+	}
+	cacheTotal, err := bytesOr("CACHE_TOTAL_BYTES", os.Getenv("CACHE_TOTAL_BYTES"), defaultCacheTotal)
+	if err != nil {
+		return Config{}, err
+	}
 	levelName := os.Getenv("LOG_LEVEL")
 	if levelName == "" {
 		levelName = "INFO"
@@ -83,6 +106,9 @@ func Load() (Config, error) {
 		ObjectProxyPort:  proxyPort,
 		PublicPort:       publicPort,
 		AppsDomain:       appsDomain,
+		CachePort:        cachePort,
+		CacheQuota:       cacheQuota,
+		CacheTotal:       cacheTotal,
 		LogLevel:         level,
 	}, nil
 }
@@ -139,4 +165,16 @@ func domain(name string, value string) (string, error) {
 		return "", fmt.Errorf("%s must be a DNS name of lowercase labels; got '%s'", name, value)
 	}
 	return value, nil
+}
+
+// A positive number of bytes; empty gives the default.
+func bytesOr(name string, value string, fallback int64) (int64, error) {
+	if value == "" {
+		return fallback, nil
+	}
+	number, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || number < 1 {
+		return 0, fmt.Errorf("%s must be a positive number of bytes; got '%s'", name, value)
+	}
+	return number, nil
 }

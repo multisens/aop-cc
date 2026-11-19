@@ -13,12 +13,13 @@ import (
 
 // @controlCode values (ABNT NBR 25608, 10.1).
 const (
-	autostart     = "AUTOSTART"
-	present       = "PRESENT"
-	storedPresent = "STORED_PRESENT"
-	destroy       = "DESTROY"
-	kill          = "KILL"
-	storedRemove  = "STORED_REMOVE"
+	autostart       = "AUTOSTART"
+	storedAutostart = "STORED_AUTOSTART"
+	present         = "PRESENT"
+	storedPresent   = "STORED_PRESENT"
+	destroy         = "DESTROY"
+	kill            = "KILL"
+	storedRemove    = "STORED_REMOVE"
 )
 
 // Values of the application state event.
@@ -28,6 +29,9 @@ const (
 )
 
 const html5AppType = "TV30-Ginga-HTML5"
+
+// While a STORED_AUTOSTART waits, the cache is asked again at this period.
+const storedRecheck = time.Second
 
 // apply brings the graphics layer to what the BALD of the tuned service
 // says now, and gives the next validity instant (zero if none). Called
@@ -39,7 +43,14 @@ func (m *Manager) apply(ctx context.Context) time.Time {
 	m.choosePending(entries)
 	m.launchPending(ctx)
 	m.publishPresent(ctx, entries)
-	return m.nextValidityInstant(now)
+	next := m.nextValidityInstant(now)
+	if m.pending != nil && m.pending.code() == storedAutostart {
+		recheck := now.Add(storedRecheck)
+		if next.IsZero() || recheck.Before(next) {
+			next = recheck
+		}
+	}
+	return next
 }
 
 // The HTML5 entries of the BALD of the tuned service inside their validity
@@ -88,27 +99,30 @@ func (m *Manager) applyRunning(ctx context.Context, entries []Entry) {
 	}
 }
 
-// An AUTOSTART is launched when it is received: when its effective code becomes
-// AUTOSTART. Of several at once, the last of the BALD. The code of each entry
-// is kept for the next pass.
+// An AUTOSTART or a STORED_AUTOSTART is launched when it is received: when
+// its effective code becomes that code. Of several at once, the last of the
+// BALD. The code of each entry is kept for the next pass.
 func (m *Manager) choosePending(entries []Entry) {
 	codes := map[string]string{}
 	for _, entry := range entries {
 		codes[entry.AppID] = entry.code()
-		if entry.code() == autostart && m.codes[entry.AppID] != autostart {
+		launched := entry.code() == autostart || entry.code() == storedAutostart
+		if launched && m.codes[entry.AppID] != entry.code() {
 			candidate := entry
 			m.pending = &candidate
-			slog.Info("AUTOSTART received; launch pending", "appId", entry.AppID)
+			slog.Info("application received; launch pending", "appId", entry.AppID, "controlCode", entry.code())
 		}
 	}
-	if m.pending != nil && codes[m.pending.AppID] != autostart {
+	if m.pending != nil && codes[m.pending.AppID] != m.pending.code() {
 		m.pending = nil
 	}
 	m.codes = codes
 }
 
-// The pending launch starts once the service context is known (the SLT)
-// and, by broadcast, once its entry point is available in the carousel.
+// The pending launch starts once the service context is known (the SLT);
+// an AUTOSTART by broadcast, once its entry point is available in the
+// carousel; a STORED_AUTOSTART, once the cache has it complete (ABNT NBR
+// 25608, 10.1).
 func (m *Manager) launchPending(ctx context.Context) {
 	if m.pending == nil {
 		return
@@ -124,7 +138,16 @@ func (m *Manager) launchPending(ctx context.Context) {
 		m.pending = nil
 		return
 	}
-	if awaits != "" && !m.available[awaits] {
+	if entry.code() == storedAutostart {
+		complete, err := m.completion.Complete(ctx, entry.AppContextID)
+		if err != nil {
+			slog.Error("cache not asked for a stored application", "appId", entry.AppID, "error", err)
+			return
+		}
+		if !complete {
+			return
+		}
+	} else if awaits != "" && !m.available[awaits] {
 		return
 	}
 	m.pending = nil

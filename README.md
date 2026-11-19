@@ -6,8 +6,9 @@ it acquires the transport layer signaling the broadcaster side serves over
 HTTP and distributes it inside the platform as retained MQTT messages. It also
 realizes `aop-transport-layer-object-proxy`: it serves the broadcast objects of
 each service with a carousel, subject to the passes of the carousel, and the
-origin of each Application Context ID. And it realizes
-`aop-application-lifecycle-manager`: by the `@controlCode` of the BALD of the
+origin of each Application Context ID. It realizes
+`aop-application-context-cache`: it keeps the files of the stored
+applications. And it realizes `aop-application-lifecycle-manager`: by the `@controlCode` of the BALD of the
 tuned service, it decides which broadcaster application replaces the Bootstrap
 Application in the graphics layer.
 
@@ -20,6 +21,7 @@ Application in the graphics layer.
 | `internal/acquisition` | the cycle: scan, then emission descriptor and SLS of each service |
 | `internal/proxy` | the object proxy: service family, application family, object events |
 | `internal/carousel` | S-TSID and descriptor joined; passes, expiry, templates, USBD, entry package |
+| `internal/cache` | the Application Context Cache: admission, removal, routes of reading |
 | `internal/lifecycle` | the application lifecycle manager: BALD, launch, end, associated origin |
 | `internal/storage` | the writes to Redis, only through the functions of the `tv30` library |
 | `internal/emission` | the emission descriptor and the count of the signaling channel passes |
@@ -91,6 +93,39 @@ became available (or with a new `lastModified`), and
 `tlm/object/{serviceId}/expired` when it stops being available. A change of
 tuning emits no `expired`.
 
+## Application Context Cache
+
+It subscribes to `tlm/tuned`, `tlm/lls/+/slt`, `tlm/sls/+/bald`,
+`tlm/sls/+/stsid`, `tlm/emission/+` and `tlm/object/+/available`. An object of
+the tuned service enters the cache when its `appContextIdList` has the
+`appContextId` of a BALD entry with `STORED_AUTOSTART` or `STORED_PRESENT`,
+unless its `Last-Modified` is before the `clearAppContextCacheDate` of that
+entry. The cache fetches it from the object proxy, by the URL of the event,
+and keeps its body, `Content-Type` and `Last-Modified` in Redis
+(`cache:meta:{appContextId}` and `cache:body:{appContextId}`).
+
+| BALD of the tuned service | Effect |
+|---|---|
+| `STORED_REMOVE` | the files of the `appContextId` leave the cache |
+| `clearAppContextCacheDate` | the files with `Last-Modified` before it leave the cache |
+
+The quota is by DTV service context: a file over `CACHE_QUOTA_BYTES` is not
+stored. Over `CACHE_TOTAL_BYTES`, the DTV service context with the oldest last
+access, other than the one being written, leaves the cache whole. Every read
+counts as an access.
+
+Routes, on `CACHE_PORT`:
+
+| Route | Answer |
+|---|---|
+| `GET /app/{appContextId}/{path}` | the file, with its stored `Content-Type` and `Last-Modified`; `404` if not there |
+| `GET /app/{appContextId}` | `{ complete, files }`: `complete` when every object of the `appContextId` in the S-TSID of the tuned service, the parts of its entry packages included, is in the cache |
+
+The object proxy reads a file from here when the carousel does not offer it:
+not passed since the tuning, expired, or not in the carousel. An entry package
+is served with the `Content-Type` of the S-TSID and the parameters (`boundary`,
+`type`) of the origin.
+
 ## Application lifecycle manager
 
 It subscribes to `tlm/tuned`, `tlm/lls/+/slt` (the `globalServiceId` of each
@@ -102,6 +137,7 @@ entry outside them counts as not in the BALD.
 | BALD of the tuned service | Effect |
 |---|---|
 | an entry becomes `AUTOSTART` (or has no `controlCode`) | it is launched, ending the running one; of several at once, the last of the BALD |
+| an entry becomes `STORED_AUTOSTART` | the same, once the cache has it complete |
 | the running entry becomes `DESTROY`, `KILL` or `STORED_REMOVE`, or leaves the BALD | it ends and the Bootstrap Application returns |
 | `PRESENT` or `STORED_PRESENT` | listed in `aop/application-lifecycle-manager/present-applications` |
 
@@ -138,11 +174,14 @@ cleared by the next scan.
 | `OBJECT_PROXY_PORT` | port of the object proxy; the acquisition reaches it on `127.0.0.1` |
 | `OBJECT_PROXY_PUBLIC_PORT` | the same port as the browser reaches it, in the context origins and event URLs |
 | `APPS_DOMAIN` | domain of the context origins, e.g. `apps.localhost` |
+| `CACHE_PORT` | port of the routes of the Application Context Cache, reached on `127.0.0.1` |
+| `CACHE_QUOTA_BYTES` | quota of the cache by DTV service context (default 112000000) |
+| `CACHE_TOTAL_BYTES` | total of the cache (default 500000000) |
 | `LOG_LEVEL` | `ERROR`, `INFO` (default) or `DEBUG` |
 
 ```sh
 MQTT_HOST=localhost REDIS_HOST=localhost SIGNALING_BASE_URL=http://localhost:8082/signaling/ OBJECT_PROXY_PORT=8081 \
-    OBJECT_PROXY_PUBLIC_PORT=8081 APPS_DOMAIN=apps.localhost go run ./cmd/aop-cc
+    OBJECT_PROXY_PUBLIC_PORT=8081 APPS_DOMAIN=apps.localhost CACHE_PORT=8083 go run ./cmd/aop-cc
 ```
 
 ## Container
@@ -150,7 +189,7 @@ MQTT_HOST=localhost REDIS_HOST=localhost SIGNALING_BASE_URL=http://localhost:808
 ```sh
 docker build -t tv30-aop-cc .
 docker run --rm -e MQTT_HOST=mqtt-broker -e REDIS_HOST=redis -e SIGNALING_BASE_URL=http://bcast-sim:8082/signaling/ \
-    -e OBJECT_PROXY_PORT=8081 -e OBJECT_PROXY_PUBLIC_PORT=8081 -e APPS_DOMAIN=apps.localhost tv30-aop-cc
+    -e OBJECT_PROXY_PORT=8081 -e OBJECT_PROXY_PUBLIC_PORT=8081 -e APPS_DOMAIN=apps.localhost -e CACHE_PORT=8082 tv30-aop-cc
 ```
 
 ## Tests
