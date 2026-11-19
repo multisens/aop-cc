@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -385,6 +386,12 @@ func TestEntryPackagePartsAreServedAsObjects(t *testing.T) {
 	if response.Code != http.StatusOK || response.Body.String() != "run();" ||
 		response.Header().Get("Content-Type") != "text/javascript" {
 		t.Fatalf("app.js: %d %q %q", response.Code, response.Body.String(), response.Header().Get("Content-Type"))
+	}
+	pkg := f.getApp(contextA, "/app.pkg")
+	mediaType, params, err := mime.ParseMediaType(pkg.Header().Get("Content-Type"))
+	if pkg.Code != http.StatusOK || err != nil || mediaType != "multipart/related" || params["boundary"] != "pkg" ||
+		params["type"] != "text/html" {
+		t.Fatalf("app.pkg: %d %q", pkg.Code, pkg.Header().Get("Content-Type"))
 	}
 	if response := f.getApp(contextA, "/absolute.txt"); response.Code != http.StatusNotFound {
 		t.Fatalf("part with absolute Content-Location: %d", response.Code)

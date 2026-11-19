@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"mime"
 	"net/http"
 	"slices"
 	"strconv"
@@ -192,6 +193,7 @@ func (p *Proxy) serveFound(w http.ResponseWriter, r *http.Request, match found) 
 			return
 		}
 		body = fetched.Body
+		contentType = withPackageParameters(contentType, fetched.ContentType)
 	}
 	header := w.Header()
 	header.Set("Content-Type", contentType)
@@ -206,6 +208,20 @@ func (p *Proxy) serveFound(w http.ResponseWriter, r *http.Request, match found) 
 	}
 	header.Set("Content-Length", strconv.Itoa(len(body)))
 	writeBody(w, r, http.StatusOK, body)
+}
+
+// The Content-Type of the S-TSID; for an entry package, with the parameters
+// the origin gives it (boundary and type), without which its parts cannot be
+// told apart.
+func withPackageParameters(declared string, fromOrigin string) string {
+	if declared != carousel.PackageType {
+		return declared
+	}
+	mediaType, params, err := mime.ParseMediaType(fromOrigin)
+	if err != nil || mediaType != carousel.PackageType {
+		return declared
+	}
+	return mime.FormatMediaType(declared, params)
 }
 
 // A path of a fileTemplate: the origin decides; its 404 is passed on, as the
