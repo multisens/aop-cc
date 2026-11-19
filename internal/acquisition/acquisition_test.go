@@ -250,3 +250,41 @@ func TestDescriptorGoneReturnsTheServiceToTheSignalingServer(t *testing.T) {
 		t.Fatalf("SLS not acquired from the Signaling Server")
 	}
 }
+
+func TestRetainedTopicsFromBeforeARestartAreClearedWhenGone(t *testing.T) {
+	_, publisher, _, acquisition := setup(t)
+	for _, topic := range []string{"tlm/lls/20/slt", "tlm/lls/20/bamt", "tlm/sls/2001/mpd",
+		"tlm/emission/2001"} {
+		acquisition.Receive(topic, []byte("{}"))
+	}
+	acquisition.Cycle(context.Background())
+	for _, topic := range []string{"tlm/lls/20/slt", "tlm/lls/20/bamt", "tlm/sls/2001/mpd",
+		"tlm/emission/2001"} {
+		assertCleared(t, publisher, topic)
+	}
+}
+
+func TestRetainedTopicOfAPresentTableIsPublishedAgainAndNotCleared(t *testing.T) {
+	_, publisher, _, acquisition := setup(t)
+	acquisition.Receive("tlm/lls/10/slt", []byte("{}"))
+	acquisition.Receive("tlm/sls/1001/bald", []byte("{}"))
+	acquisition.Cycle(context.Background())
+	for _, topic := range []string{"tlm/lls/10/slt", "tlm/sls/1001/bald"} {
+		if payload, found := publisher.last(topic); !found || payload == "" {
+			t.Fatalf("%s not published again (published: %v, payload %q)", topic, found, payload)
+		}
+	}
+}
+
+func TestOwnMessageReceivedBackKeepsItsVersion(t *testing.T) {
+	side, publisher, clock, acquisition := setup(t)
+	acquisition.Cycle(context.Background())
+	bald, _ := publisher.last("tlm/sls/1001/bald")
+	acquisition.Receive("tlm/sls/1001/bald", []byte(bald))
+	publisher.reset()
+
+	side.setPackage(1001, slsPackage(1, 1, 1))
+	clock.advance(5 * time.Second)
+	acquisition.Cycle(context.Background())
+	assertTopics(t, publisher.topics(), []string{"tlm/scan"})
+}

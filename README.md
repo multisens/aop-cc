@@ -65,7 +65,10 @@ Every message is retained; clearing is the empty retained message. A failure
 of the origin publishes and clears nothing. A fragment that is not JSON (or,
 for the MPD, well-formed XML) is not published. The schema of each topic is
 the broker's: a refused message is logged and not sent again until its
-version changes. After a restart everything is published once more.
+version changes. After a restart everything is published once more; the
+acquisition subscribes to `tlm/lls/#`, `tlm/sls/#` and `tlm/emission/+`, so
+that a retained topic published before the restart and no longer declared is
+cleared by the next scan.
 
 ## Environment
 

@@ -29,8 +29,12 @@ type Subscription struct {
 }
 
 // Client is a Publisher over a connection that reconnects by itself.
+// Subscriptions are added before Connect.
 type Client struct {
-	manager *autopaho.ConnectionManager
+	server        *url.URL
+	clientID      string
+	subscriptions []Subscription
+	manager       *autopaho.ConnectionManager
 }
 
 const (
@@ -43,31 +47,42 @@ const (
 // outside the schema of the topic.
 var ErrRefused = errors.New("refused by the broker")
 
-// Connect starts the connection and subscribes on every connection up;
-// Publish fails while it is down.
-func Connect(ctx context.Context, server *url.URL, clientID string, subscriptions []Subscription) (*Client,
-	error) {
+// ErrNotConnected is a Publish before Connect.
+var ErrNotConnected = errors.New("MQTT client not connected")
+
+// New gives a Client not connected yet.
+func New(server *url.URL, clientID string) *Client {
+	return &Client{server: server, clientID: clientID, subscriptions: []Subscription{}}
+}
+
+// Subscribe adds a subscription, made on every connection up.
+func (c *Client) Subscribe(subscription Subscription) {
+	c.subscriptions = append(c.subscriptions, subscription)
+}
+
+// Connect starts the connection; Publish fails while it is down.
+func (c *Client) Connect(ctx context.Context) error {
 	router := paho.NewStandardRouter()
-	for _, subscription := range subscriptions {
+	for _, subscription := range c.subscriptions {
 		receive := subscription.Receive
 		router.RegisterHandler(subscription.Filter, func(message *paho.Publish) {
 			receive(message.Topic, message.Payload)
 		})
 	}
 	manager, err := autopaho.NewConnection(ctx, autopaho.ClientConfig{
-		ServerUrls:                    []*url.URL{server},
+		ServerUrls:                    []*url.URL{c.server},
 		KeepAlive:                     keepAliveSeconds,
 		CleanStartOnInitialConnection: true,
 		ReconnectBackoff:              func(int) time.Duration { return reconnectDelay },
 		OnConnectionUp: func(manager *autopaho.ConnectionManager, _ *paho.Connack) {
-			slog.Info("connected to the MQTT broker", "server", server.Host)
-			subscribe(ctx, manager, subscriptions)
+			slog.Info("connected to the MQTT broker", "server", c.server.Host)
+			subscribe(ctx, manager, c.subscriptions)
 		},
 		OnConnectError: func(err error) {
-			slog.Error("MQTT connection failed", "server", server.Host, "error", err)
+			slog.Error("MQTT connection failed", "server", c.server.Host, "error", err)
 		},
 		ClientConfig: paho.ClientConfig{
-			ClientID: clientID,
+			ClientID: c.clientID,
 			OnPublishReceived: []func(paho.PublishReceived) (bool, error){
 				func(received paho.PublishReceived) (bool, error) {
 					router.Route(received.Packet.Packet())
@@ -77,14 +92,18 @@ func Connect(ctx context.Context, server *url.URL, clientID string, subscription
 		},
 	})
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return &Client{manager: manager}, nil
+	c.manager = manager
+	return nil
 }
 
 // Publish sends with QoS 1 and retain; a reason code of error in the
 // PUBACK gives ErrRefused.
 func (c *Client) Publish(ctx context.Context, topic string, payload []byte) error {
+	if c.manager == nil {
+		return ErrNotConnected
+	}
 	response, err := c.manager.Publish(ctx, &paho.Publish{
 		QoS:     1,
 		Retain:  true,
@@ -107,14 +126,20 @@ func (c *Client) Disconnect(ctx context.Context) error {
 	return c.manager.Disconnect(ctx)
 }
 
-// A failed subscription is logged: the messages of that filter are lost
-// until the next connection.
+// One subscription per filter, however many receivers it has. A failed
+// subscription is logged: the messages of that filter are lost until the
+// next connection.
 func subscribe(ctx context.Context, manager *autopaho.ConnectionManager, subscriptions []Subscription) {
 	if len(subscriptions) == 0 {
 		return
 	}
 	options := []paho.SubscribeOptions{}
+	filters := map[string]bool{}
 	for _, subscription := range subscriptions {
+		if filters[subscription.Filter] {
+			continue
+		}
+		filters[subscription.Filter] = true
 		options = append(options, paho.SubscribeOptions{Topic: subscription.Filter, QoS: 1})
 	}
 	acknowledgement, err := manager.Subscribe(ctx, &paho.Subscribe{Subscriptions: options})

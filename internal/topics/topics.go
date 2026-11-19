@@ -48,25 +48,60 @@ func SLS(serviceID int, fragment string) (string, bool) {
 	return fmt.Sprintf("%s/%d/%s", slsBase, serviceID, fragment), true
 }
 
+// LLSFilter is the subscription filter of every LLS topic.
+func LLSFilter() string {
+	return llsBase + "/#"
+}
+
+// SLSFilter is the subscription filter of every SLS topic.
+func SLSFilter() string {
+	return slsBase + "/#"
+}
+
+// AnySLSPrefix is the prefix of every SLS topic of every service.
+func AnySLSPrefix() string {
+	return slsBase + "/"
+}
+
+// SLSServiceID is the serviceId of an <sls> topic; false for any other
+// topic.
+func SLSServiceID(topic string) (int, bool) {
+	suffix, found := strings.CutPrefix(topic, AnySLSPrefix())
+	if !found {
+		return 0, false
+	}
+	serviceSegment, _, _ := strings.Cut(suffix, "/")
+	serviceID, err := strconv.Atoi(serviceSegment)
+	if err != nil {
+		return 0, false
+	}
+	return serviceID, true
+}
+
 // SLSPrefix is the prefix of every SLS topic of a service.
 func SLSPrefix(serviceID int) string {
 	return fmt.Sprintf("%s/%d/", slsBase, serviceID)
 }
 
+// EmissionPrefix is the prefix of every <tl>/emission topic.
+func EmissionPrefix() string {
+	return tlBase + "/emission/"
+}
+
 // Emission is <tl>/emission/{serviceId}.
 func Emission(serviceID int) string {
-	return fmt.Sprintf("%s%d", emissionPrefix(), serviceID)
+	return fmt.Sprintf("%s%d", EmissionPrefix(), serviceID)
 }
 
 // EmissionFilter is the subscription filter of every <tl>/emission topic.
 func EmissionFilter() string {
-	return emissionPrefix() + "+"
+	return EmissionPrefix() + "+"
 }
 
 // EmissionServiceID is the serviceId of an <tl>/emission topic; false for
 // any other topic.
 func EmissionServiceID(topic string) (int, bool) {
-	suffix, found := strings.CutPrefix(topic, emissionPrefix())
+	suffix, found := strings.CutPrefix(topic, EmissionPrefix())
 	if !found {
 		return 0, false
 	}
@@ -80,8 +115,4 @@ func EmissionServiceID(topic string) (int, bool) {
 // Scan is <tl>/scan.
 func Scan() string {
 	return tlBase + "/scan"
-}
-
-func emissionPrefix() string {
-	return tlBase + "/emission/"
 }

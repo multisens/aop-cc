@@ -51,9 +51,14 @@ func main() {
 	}
 	slog.Info("object proxy started", "port", settings.ObjectProxyPort)
 
-	subscriptions := []broker.Subscription{{Filter: topics.EmissionFilter(), Receive: objectProxy.Receive}}
-	client, err := broker.Connect(ctx, settings.MQTTURL, clientID, subscriptions)
-	if err != nil {
+	client := broker.New(settings.MQTTURL, clientID)
+	proxyBase := proxyBaseURL(settings.ObjectProxyPort)
+	signalingAcquisition := acquisition.New(settings.SignalingBaseURL, proxyBase, client, time.Now)
+	client.Subscribe(broker.Subscription{Filter: topics.EmissionFilter(), Receive: objectProxy.Receive})
+	for _, filter := range []string{topics.LLSFilter(), topics.SLSFilter(), topics.EmissionFilter()} {
+		client.Subscribe(broker.Subscription{Filter: filter, Receive: signalingAcquisition.Receive})
+	}
+	if err := client.Connect(ctx); err != nil {
 		slog.Error("MQTT client not started", "error", err)
 		os.Exit(1)
 	}
@@ -63,8 +68,7 @@ func main() {
 		return
 	}
 	slog.Info("acquisition started", "signaling", settings.SignalingBaseURL.String())
-	proxyBase := proxyBaseURL(settings.ObjectProxyPort)
-	acquisition.New(settings.SignalingBaseURL, proxyBase, client, time.Now).Run(ctx)
+	signalingAcquisition.Run(ctx)
 
 	shutdown(server, client)
 	slog.Info("aop-cc stopped")

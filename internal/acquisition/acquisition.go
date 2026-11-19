@@ -12,8 +12,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"time"
 
@@ -26,9 +28,8 @@ import (
 	"github.com/multisens/aop-cc/internal/topics"
 )
 
-// Acquisition holds the state of the cycle: when each RF channel is due,
-// which services were acquired, and when the signaling channel of each
-// service with a carousel is due.
+// Acquisition holds the state of the cycle: when each RF channel is due
+// and when the signaling channel of each service with a carousel is due.
 type Acquisition struct {
 	origin        *origin.Client
 	signalingBase *url.URL
@@ -38,7 +39,6 @@ type Acquisition struct {
 	sls           *sls.Acquirer
 	now           func() time.Time
 	nextDue       map[int]time.Time
-	services      map[int]bool
 	warned        map[int]bool
 	carousels     map[int]carousel
 }
@@ -85,7 +85,6 @@ func New(signalingBase *url.URL, proxyBase *url.URL, publisher broker.Publisher,
 		sls:           sls.New(client, store),
 		now:           now,
 		nextDue:       map[int]time.Time{},
-		services:      map[int]bool{},
 		warned:        map[int]bool{},
 		carousels:     map[int]carousel{},
 	}
@@ -148,13 +147,20 @@ func (a *Acquisition) Cycle(ctx context.Context) time.Duration {
 			delete(a.nextDue, bsid)
 		}
 	}
-	for serviceID := range a.services {
+	for _, serviceID := range a.knownServices() {
 		if !current[serviceID] {
 			a.clearService(ctx, serviceID)
 		}
 	}
-	a.services = current
 	return period
+}
+
+// Receive takes a message of the topics this acquisition publishes, as
+// the broker delivers it on subscription: a retained message found at
+// startup becomes known, so that a later scan clears it if its table or
+// service is gone.
+func (a *Acquisition) Receive(topic string, payload []byte) {
+	a.store.Adopt(topic, payload)
 }
 
 // AcquireSignalingChannels fetches the SLS package of each service with a
@@ -281,7 +287,7 @@ func (a *Acquisition) acquireDescriptor(ctx context.Context, serviceID int) (emi
 }
 
 // A service no longer in any SLT: its SLS and descriptor topics are
-// cleared.
+// cleared, and it is forgotten.
 func (a *Acquisition) clearService(ctx context.Context, serviceID int) {
 	a.sls.Clear(ctx, serviceID)
 	a.clear(ctx, topics.Emission(serviceID))
@@ -298,6 +304,28 @@ func (a *Acquisition) clear(ctx context.Context, topic string) {
 	if cleared {
 		slog.Info("cleared", "topic", topic)
 	}
+}
+
+// The services with an SLS or descriptor topic, a carousel or a warning.
+func (a *Acquisition) knownServices() []int {
+	known := map[int]bool{}
+	for _, topic := range a.store.Topics(topics.AnySLSPrefix()) {
+		if serviceID, found := topics.SLSServiceID(topic); found {
+			known[serviceID] = true
+		}
+	}
+	for _, topic := range a.store.Topics(topics.EmissionPrefix()) {
+		if serviceID, found := topics.EmissionServiceID(topic); found {
+			known[serviceID] = true
+		}
+	}
+	for serviceID := range a.carousels {
+		known[serviceID] = true
+	}
+	for serviceID := range a.warned {
+		known[serviceID] = true
+	}
+	return slices.Sorted(maps.Keys(known))
 }
 
 // <comporta>/svc/{serviceId}/sls (5.4).
