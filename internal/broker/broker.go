@@ -107,11 +107,6 @@ func (c *Client) Disconnect(ctx context.Context) error {
 	return c.manager.Disconnect(ctx)
 }
 
-// Done is closed when the connection manager stops.
-func (c *Client) Done() <-chan struct{} {
-	return c.manager.Done()
-}
-
 // A failed subscription is logged: the messages of that filter are lost
 // until the next connection.
 func subscribe(ctx context.Context, manager *autopaho.ConnectionManager, subscriptions []Subscription) {
