@@ -13,6 +13,7 @@ import (
 const (
 	contextLabelPrefix = "ctx-"
 	contextHashDigits  = 16
+	httpPort           = 80
 )
 
 // ContextLabel is the DNS label of the origin of an Application Context ID.
@@ -21,14 +22,15 @@ func ContextLabel(appContextID string) string {
 	return contextLabelPrefix + hex.EncodeToString(digest[:])[:contextHashDigits]
 }
 
-// ContextOrigin is <app:{appContextId}>, as the browser writes it.
+// ContextOrigin is <app:{appContextId}>, as the browser writes it in the
+// Origin header (port 80 omitted).
 func (o Origins) ContextOrigin(appContextID string) string {
-	return fmt.Sprintf("http://%s.%s:%d", ContextLabel(appContextID), o.AppsDomain, o.PublicPort)
+	return fmt.Sprintf("http://%s.%s%s", ContextLabel(appContextID), o.AppsDomain, o.portSuffix())
 }
 
 // ServiceBase is <comporta>/svc/{serviceId}/, as the browser reaches it.
 func (o Origins) ServiceBase(serviceID int) string {
-	return fmt.Sprintf("http://%s:%d/svc/%d/", o.AppsDomain, o.PublicPort, serviceID)
+	return fmt.Sprintf("http://%s%s/svc/%d/", o.AppsDomain, o.portSuffix(), serviceID)
 }
 
 // hostContextLabel is the context label of a Host header under the apps
@@ -43,4 +45,12 @@ func (o Origins) hostContextLabel(host string) (string, bool) {
 		return "", false
 	}
 	return label, true
+}
+
+// ":port", empty for port 80.
+func (o Origins) portSuffix() string {
+	if o.PublicPort == httpPort {
+		return ""
+	}
+	return fmt.Sprintf(":%d", o.PublicPort)
 }
