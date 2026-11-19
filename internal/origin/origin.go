@@ -9,10 +9,12 @@ import (
 	"time"
 )
 
-// Response is the status, the Content-Type and the body of a response.
+// Response is the status, the headers and the body of a response;
+// ContentType is that of the headers.
 type Response struct {
 	Status      int
 	ContentType string
+	Header      http.Header
 	Body        []byte
 }
 
@@ -46,6 +48,7 @@ func (c *Client) Get(ctx context.Context, url string) (Response, error) {
 	return Response{
 		Status:      response.StatusCode,
 		ContentType: response.Header.Get("Content-Type"),
+		Header:      response.Header,
 		Body:        body,
 	}, nil
 }

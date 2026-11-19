@@ -4,8 +4,9 @@ Common Core component of the TV 3.0 AoP testbed platform. It realizes the
 units `aop-transport-layer-metadata-lls` and `aop-transport-layer-metadata-sls`:
 it acquires the transport layer signaling the broadcaster side serves over
 HTTP and distributes it inside the platform as retained MQTT messages. It also
-realizes `aop-transport-layer-object-proxy`, for now only for the signaling
-channel of each service with a carousel.
+realizes `aop-transport-layer-object-proxy`: it serves the broadcast objects of
+each service with a carousel, subject to the passes of the carousel, and the
+origin of each Application Context ID.
 
 ## Packages
 
@@ -14,7 +15,8 @@ channel of each service with a carousel.
 | `internal/lls` | scan of `<signaling>/lls`; one topic per LLS table and the scan marker |
 | `internal/sls` | SLS package (`multipart/related`): envelope first, one topic per fragment |
 | `internal/acquisition` | the cycle: scan, then emission descriptor and SLS of each service |
-| `internal/proxy` | the object proxy: `GET`, `HEAD` `/svc/{serviceId}/sls` |
+| `internal/proxy` | the object proxy: service family, application family, object events |
+| `internal/carousel` | S-TSID and descriptor joined; passes, expiry, templates, USBD, entry package |
 | `internal/emission` | the emission descriptor and the count of the signaling channel passes |
 | `internal/retained` | last version published on each topic, in memory |
 | `internal/broker` | MQTT 5 publication, QoS 1, retained; subscription |
@@ -46,18 +48,43 @@ first scan and after a failed one):
 
 ## Object proxy
 
-It subscribes to `tlm/emission/+` and serves, on `OBJECT_PROXY_PORT`:
+It subscribes to `tlm/emission/+`, `tlm/sls/+/stsid`, `tlm/sls/+/usbd` and
+`tlm/tuned`. With the descriptor of a service it serves the signaling channel;
+with the S-TSID too, the other objects. Only `GET` and `HEAD`; any other method
+is `405`. The body of an error says the reason in text.
+
+**Service family**, `/svc/{serviceId}/{path}` on any host but a context origin:
 
 | Request | Answer |
 |---|---|
-| `GET`, `HEAD` `/svc/{serviceId}/sls`, after the first pass | `200`: the package of `signaling.url`, unchanged, with `Last-Modified` at the end of the last pass |
-| the same, before the first pass | `404` |
-| any path of a service without descriptor | `404` |
-| any other path of a service with descriptor | `503`: armed only for the signaling channel |
-| the origin failing or not answering `200` | `502`, logged |
-| any other method | `405` |
+| `sls`, after the first pass of the signaling count | `200`: the package of `signaling.url`, unchanged, with `Last-Modified` at the end of the last pass |
+| `sls`, before it | `404` |
+| a service without descriptor | `404` |
+| before the S-TSID | `503` |
+| a URL that only the unicast `BasePattern` of the USBD matches best | the origin, with its headers |
+| a service other than the tuned one | `404` |
+| a file of the S-TSID | `200` while available, `404` otherwise |
+| a path of a `fileTemplate` (TOI of at least 1) | the origin decides: `200` or its `404` |
+| anything else | `404`, without a request to the origin |
 
-The body of an error says the reason in text.
+**Application family**, any path on `http://ctx-<h>.<APPS_DOMAIN>:<port>`, `<h>`
+being the first 16 hexadecimal digits of the SHA-256 of the `appContextId`: a
+file of the S-TSID of the tuned service, or a part of one of its entry packages
+(`multipart/related`), whose `appContextIdList` has that `appContextId`.
+
+A file is available after its first complete pass begun at or after
+`tunedAt`, until `maxExpiresDelta` from the start of that pass; a part, as its
+package. Broadcast answers carry `Content-Type` of the S-TSID (or of the part),
+`Last-Modified` of the descriptor, `Expires` with `maxExpiresDelta`, and
+`Access-Control-Allow-Origin: *`; `If-Modified-Since` at or after
+`Last-Modified` gives `304`. The origin failing a declared object gives `502`,
+logged.
+
+**Events**, not retained, for the files and parts of the tuned service:
+`tlm/object/{serviceId}/available` at the end of a pass after which the object
+became available (or with a new `lastModified`), and
+`tlm/object/{serviceId}/expired` when it stops being available. A change of
+tuning emits no `expired`.
 
 ## Messages
 
@@ -77,10 +104,13 @@ cleared by the next scan.
 | `MQTT_HOST` | broker, `host` or `host:port` (default port 1883) |
 | `SIGNALING_BASE_URL` | `<signaling>` of the broadcaster side, absolute, ending in `/` |
 | `OBJECT_PROXY_PORT` | port of the object proxy; the acquisition reaches it on `127.0.0.1` |
+| `OBJECT_PROXY_PUBLIC_PORT` | the same port as the browser reaches it, in the context origins and event URLs |
+| `APPS_DOMAIN` | domain of the context origins, e.g. `apps.localhost` |
 | `LOG_LEVEL` | `ERROR`, `INFO` (default) or `DEBUG` |
 
 ```sh
-MQTT_HOST=localhost SIGNALING_BASE_URL=http://localhost:8082/signaling/ OBJECT_PROXY_PORT=8081 go run ./cmd/aop-cc
+MQTT_HOST=localhost SIGNALING_BASE_URL=http://localhost:8082/signaling/ OBJECT_PROXY_PORT=8081 \
+    OBJECT_PROXY_PUBLIC_PORT=8081 APPS_DOMAIN=apps.localhost go run ./cmd/aop-cc
 ```
 
 ## Container
@@ -88,7 +118,7 @@ MQTT_HOST=localhost SIGNALING_BASE_URL=http://localhost:8082/signaling/ OBJECT_P
 ```sh
 docker build -t tv30-aop-cc .
 docker run --rm -e MQTT_HOST=mqtt-broker -e SIGNALING_BASE_URL=http://bcast-sim:8082/signaling/ \
-    -e OBJECT_PROXY_PORT=8081 tv30-aop-cc
+    -e OBJECT_PROXY_PORT=8081 -e OBJECT_PROXY_PUBLIC_PORT=8081 -e APPS_DOMAIN=apps.localhost tv30-aop-cc
 ```
 
 ## Tests

@@ -101,19 +101,13 @@ func (c *Client) Connect(ctx context.Context) error {
 // Publish sends with QoS 1 and retain; a reason code of error in the
 // PUBACK gives ErrRefused.
 func (c *Client) Publish(ctx context.Context, topic string, payload []byte) error {
-	if c.manager == nil {
-		return ErrNotConnected
-	}
-	response, err := c.manager.Publish(ctx, &paho.Publish{
-		QoS:     1,
-		Retain:  true,
-		Topic:   topic,
-		Payload: payload,
-	})
-	if response != nil && response.ReasonCode >= firstErrorCode {
-		return fmt.Errorf("%w: reason code 0x%02x", ErrRefused, response.ReasonCode)
-	}
-	return err
+	return c.publish(ctx, topic, payload, true)
+}
+
+// PublishEvent sends with QoS 1 and without retain, as Publish does
+// otherwise.
+func (c *Client) PublishEvent(ctx context.Context, topic string, payload []byte) error {
+	return c.publish(ctx, topic, payload, false)
 }
 
 // AwaitConnection waits for the first connection.
@@ -124,6 +118,22 @@ func (c *Client) AwaitConnection(ctx context.Context) error {
 // Disconnect ends the connection.
 func (c *Client) Disconnect(ctx context.Context) error {
 	return c.manager.Disconnect(ctx)
+}
+
+func (c *Client) publish(ctx context.Context, topic string, payload []byte, retain bool) error {
+	if c.manager == nil {
+		return ErrNotConnected
+	}
+	response, err := c.manager.Publish(ctx, &paho.Publish{
+		QoS:     1,
+		Retain:  retain,
+		Topic:   topic,
+		Payload: payload,
+	})
+	if response != nil && response.ReasonCode >= firstErrorCode {
+		return fmt.Errorf("%w: reason code 0x%02x", ErrRefused, response.ReasonCode)
+	}
+	return err
 }
 
 // One subscription per filter, however many receivers it has. A failed

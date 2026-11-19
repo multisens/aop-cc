@@ -1,6 +1,5 @@
-// Command aop-cc is the Common Core component of the platform: in this
-// stage, the acquisition of the transport layer signaling and the object
-// proxy armed for the signaling channel.
+// Command aop-cc is the Common Core component of the platform: the
+// acquisition of the transport layer signaling and the object proxy.
 package main
 
 import (
@@ -43,7 +42,9 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	objectProxy := proxy.New(origin.New(), time.Now)
+	client := broker.New(settings.MQTTURL, clientID)
+	origins := proxy.Origins{AppsDomain: settings.AppsDomain, PublicPort: settings.PublicPort}
+	objectProxy := proxy.New(origin.New(), time.Now, client, origins)
 	server, err := listen(settings.ObjectProxyPort, objectProxy.Handler())
 	if err != nil {
 		slog.Error("object proxy not started", "error", err)
@@ -51,10 +52,11 @@ func main() {
 	}
 	slog.Info("object proxy started", "port", settings.ObjectProxyPort)
 
-	client := broker.New(settings.MQTTURL, clientID)
 	proxyBase := proxyBaseURL(settings.ObjectProxyPort)
 	signalingAcquisition := acquisition.New(settings.SignalingBaseURL, proxyBase, client, time.Now)
-	client.Subscribe(broker.Subscription{Filter: topics.EmissionFilter(), Receive: objectProxy.Receive})
+	for _, filter := range proxy.Filters() {
+		client.Subscribe(broker.Subscription{Filter: filter, Receive: objectProxy.Receive})
+	}
 	for _, filter := range []string{topics.LLSFilter(), topics.SLSFilter(), topics.EmissionFilter()} {
 		client.Subscribe(broker.Subscription{Filter: filter, Receive: signalingAcquisition.Receive})
 	}
@@ -68,6 +70,7 @@ func main() {
 		return
 	}
 	slog.Info("acquisition started", "signaling", settings.SignalingBaseURL.String())
+	go objectProxy.RunEvents(ctx)
 	signalingAcquisition.Run(ctx)
 
 	shutdown(server, client)

@@ -15,6 +15,18 @@ const (
 	BAMT = "bamt"
 )
 
+// SLS fragment names the object proxy subscribes to.
+const (
+	STSID = "stsid"
+	USBD  = "usbd"
+)
+
+// Object events of 5.6.
+const (
+	ObjectAvailable = "available"
+	ObjectExpired   = "expired"
+)
+
 const (
 	llsBase = "tlm/lls"
 	slsBase = "tlm/sls"
@@ -78,6 +90,22 @@ func SLSServiceID(topic string) (int, bool) {
 	return serviceID, true
 }
 
+// SLSFragmentFilter is the subscription filter of a fragment of every
+// service: <sls>/+/{fragment}.
+func SLSFragmentFilter(fragment string) string {
+	return fmt.Sprintf("%s/+/%s", slsBase, fragment)
+}
+
+// SLSFragment is the serviceId and the fragment of an <sls> topic; false
+// for any other topic.
+func SLSFragment(topic string) (int, string, bool) {
+	serviceID, found := SLSServiceID(topic)
+	if !found {
+		return 0, "", false
+	}
+	return serviceID, topic[strings.LastIndex(topic, "/")+1:], true
+}
+
 // SLSPrefix is the prefix of every SLS topic of a service.
 func SLSPrefix(serviceID int) string {
 	return fmt.Sprintf("%s/%d/", slsBase, serviceID)
@@ -110,6 +138,16 @@ func EmissionServiceID(topic string) (int, bool) {
 		return 0, false
 	}
 	return serviceID, true
+}
+
+// Tuned is <tl>/tuned.
+func Tuned() string {
+	return tlBase + "/tuned"
+}
+
+// Object is <tl>/object/{serviceId}/{event}.
+func Object(serviceID int, event string) string {
+	return fmt.Sprintf("%s/object/%d/%s", tlBase, serviceID, event)
 }
 
 // Scan is <tl>/scan.

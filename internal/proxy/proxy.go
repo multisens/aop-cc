@@ -1,138 +1,231 @@
-// Package proxy is aop-transport-layer-object-proxy. In this stage
-// (implementation document, 10.1, M6) it is armed only for the signaling
-// channel: <comporta>/svc/{serviceId}/sls, the SLS package of each service
-// with an emission descriptor, subject to the signaling count (5.3, 5.5).
+// Package proxy is aop-transport-layer-object-proxy (implementation
+// document, Section 5): it serves the signaling channel of each service
+// with a carousel, the objects of the carousel of the tuned service under
+// the service family and under the origin of each Application Context ID,
+// subject to the count of the passes, and emits the object events.
 package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net/http"
-	"strconv"
 	"sync"
 	"time"
 
+	"github.com/multisens/aop-cc/internal/carousel"
 	"github.com/multisens/aop-cc/internal/emission"
 	"github.com/multisens/aop-cc/internal/origin"
 	"github.com/multisens/aop-cc/internal/topics"
 )
 
-// Proxy keeps the emission descriptors it receives and serves the service
-// family of URLs.
+// EventPublisher publishes a message that is not retained.
+type EventPublisher interface {
+	PublishEvent(ctx context.Context, topic string, payload []byte) error
+}
+
+// Origins are where the browser reaches the proxy: the domain of the
+// origins by Application Context ID and the public port.
+type Origins struct {
+	AppsDomain string
+	PublicPort int
+}
+
+// Proxy keeps what it subscribes to (5.2, 5.3) and serves HTTP.
 type Proxy struct {
 	origin      *origin.Client
 	now         func() time.Time
+	events      EventPublisher
+	origins     Origins
 	mu          sync.RWMutex
 	descriptors map[int]emission.Descriptor
+	stsids      map[int][]byte
+	carousels   map[int]carousel.Carousel
+	patterns    map[int]carousel.BasePatterns
+	tuning      *Tuning
+	packages    map[packageKey][]carousel.Part
+	changed     chan struct{}
 }
 
-// The path of the signaling channel, reserved in the service family (5.4).
-const signalingPath = "sls"
-
-// New gives a Proxy without descriptors.
-func New(client *origin.Client, now func() time.Time) *Proxy {
-	return &Proxy{origin: client, now: now, descriptors: map[int]emission.Descriptor{}}
+// Tuning is the content of <tl>/tuned (5.2).
+type Tuning struct {
+	ServiceID   int
+	RFChannelID int
+	TunedAt     time.Time
 }
 
-// Receive takes a message of <tl>/emission/{serviceId}: an empty payload
-// removes the descriptor of the service.
+// An entry package of a service at a version.
+type packageKey struct {
+	serviceID       int
+	contentLocation string
+	lastModified    time.Time
+}
+
+type wireTuning struct {
+	ServiceID   *int    `json:"serviceId"`
+	RFChannelID *int    `json:"rfChannelId"`
+	TunedAt     *string `json:"tunedAt"`
+}
+
+// New gives a Proxy without anything received.
+func New(client *origin.Client, now func() time.Time, events EventPublisher, origins Origins) *Proxy {
+	return &Proxy{
+		origin:      client,
+		now:         now,
+		events:      events,
+		origins:     origins,
+		descriptors: map[int]emission.Descriptor{},
+		stsids:      map[int][]byte{},
+		carousels:   map[int]carousel.Carousel{},
+		patterns:    map[int]carousel.BasePatterns{},
+		packages:    map[packageKey][]carousel.Part{},
+		changed:     make(chan struct{}, 1),
+	}
+}
+
+// Filters are the topics the proxy subscribes to.
+func Filters() []string {
+	return []string{
+		topics.EmissionFilter(),
+		topics.SLSFragmentFilter(topics.STSID),
+		topics.SLSFragmentFilter(topics.USBD),
+		topics.Tuned(),
+	}
+}
+
+// Receive takes a message of one of the Filters; an empty payload removes
+// what the topic held.
 func (p *Proxy) Receive(topic string, payload []byte) {
-	serviceID, known := topics.EmissionServiceID(topic)
-	if !known {
-		slog.Error("message ignored: not an emission descriptor topic", "topic", topic)
+	if topic == topics.Tuned() {
+		p.receiveTuning(payload)
 		return
 	}
+	if serviceID, isEmission := topics.EmissionServiceID(topic); isEmission {
+		p.receiveDescriptor(serviceID, payload)
+		return
+	}
+	serviceID, fragment, isSls := topics.SLSFragment(topic)
+	switch {
+	case isSls && fragment == topics.STSID:
+		p.receiveStsid(serviceID, payload)
+	case isSls && fragment == topics.USBD:
+		p.receiveUsbd(serviceID, payload)
+	default:
+		slog.Error("message ignored: not a topic of the object proxy", "topic", topic)
+	}
+}
+
+func (p *Proxy) receiveDescriptor(serviceID int, payload []byte) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	defer p.signalChange()
 	if len(payload) == 0 {
 		delete(p.descriptors, serviceID)
+		p.rebuild(serviceID)
 		slog.Info("emission descriptor removed", "serviceId", serviceID)
 		return
 	}
 	descriptor, err := emission.Decode(payload)
 	if err != nil {
 		delete(p.descriptors, serviceID)
+		p.rebuild(serviceID)
 		slog.Error("emission descriptor does not decode; the service is served as without carousel",
 			"serviceId", serviceID, "error", err)
 		return
 	}
 	p.descriptors[serviceID] = descriptor
-	slog.Info("emission descriptor received", "serviceId", serviceID)
+	p.rebuild(serviceID)
+	slog.Debug("emission descriptor received", "serviceId", serviceID)
 }
 
-// Handler serves GET and HEAD on /svc/{serviceId}/{path}; any other method
-// is 405. The body of an error says the reason in text (5.8).
-func (p *Proxy) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /svc/{serviceId}/{path...}", p.serveService)
-	return mux
+func (p *Proxy) receiveStsid(serviceID int, payload []byte) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	defer p.signalChange()
+	if len(payload) == 0 {
+		delete(p.stsids, serviceID)
+	} else {
+		p.stsids[serviceID] = payload
+	}
+	p.rebuild(serviceID)
 }
 
-// 5.5, "Requisição à família de serviço", rows 1 to 3: the signaling
-// channel, 404 without descriptor, and 503 for any other object, since the
-// proxy is armed only in its first stage (2.2).
-func (p *Proxy) serveService(w http.ResponseWriter, r *http.Request) {
-	serviceID, err := strconv.Atoi(r.PathValue("serviceId"))
+func (p *Proxy) receiveUsbd(serviceID int, payload []byte) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(payload) == 0 {
+		delete(p.patterns, serviceID)
+		return
+	}
+	patterns, err := carousel.DecodeUsbd(payload)
 	if err != nil {
-		http.Error(w, "unknown service", http.StatusNotFound)
+		delete(p.patterns, serviceID)
+		slog.Error("USBD does not decode; every request of the service is broadcast", "serviceId", serviceID,
+			"error", err)
 		return
 	}
-	descriptor, found := p.descriptor(serviceID)
-	if !found {
-		http.Error(w, "service without carousel", http.StatusNotFound)
-		return
-	}
-	if r.PathValue("path") == signalingPath {
-		p.serveSignaling(w, r, descriptor)
-		return
-	}
-	http.Error(w, "object proxy armed only for the signaling channel", http.StatusServiceUnavailable)
+	p.patterns[serviceID] = patterns
 }
 
-// 5.5, "Canal de sinalização": 404 before the first pass; then the package
-// of signaling.url unchanged, with Last-Modified at fim(c*).
-func (p *Proxy) serveSignaling(w http.ResponseWriter, r *http.Request, descriptor emission.Descriptor) {
-	passEnd, passed := descriptor.LastSignalingPassEnd(p.now())
-	if !passed {
-		http.Error(w, "SLS package not passed yet", http.StatusNotFound)
+func (p *Proxy) receiveTuning(payload []byte) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	defer p.signalChange()
+	if len(payload) == 0 {
+		p.tuning = nil
+		slog.Info("no service tuned")
 		return
 	}
-	fetched, err := p.fetch(r.Context(), descriptor.Signaling.URL)
+	tuning, err := decodeTuning(payload)
 	if err != nil {
-		slog.Error("signaling channel not served", "serviceId", descriptor.ServiceID, "error", err)
-		http.Error(w, "origin of the SLS package failed", http.StatusBadGateway)
+		p.tuning = nil
+		slog.Error("tuning does not decode; no service tuned", "error", err)
 		return
 	}
-	header := w.Header()
-	header.Set("Content-Type", fetched.ContentType)
-	header.Set("Content-Length", strconv.Itoa(len(fetched.Body)))
-	header.Set("Last-Modified", passEnd.UTC().Format(http.TimeFormat))
-	w.WriteHeader(http.StatusOK)
-	if r.Method == http.MethodHead {
+	p.tuning = &tuning
+	slog.Info("service tuned", "serviceId", tuning.ServiceID, "tunedAt", tuning.TunedAt)
+}
+
+// With the descriptor and the S-TSID, the carousel of the service; without
+// either, none (2.2, steps 3 and 5). Called with the lock held.
+func (p *Proxy) rebuild(serviceID int) {
+	descriptor, hasDescriptor := p.descriptors[serviceID]
+	stsid, hasStsid := p.stsids[serviceID]
+	if !hasDescriptor || !hasStsid {
+		delete(p.carousels, serviceID)
 		return
 	}
-	if _, err := w.Write(fetched.Body); err != nil {
-		slog.Error("signaling channel response not written", "serviceId", descriptor.ServiceID, "error", err)
-	}
-}
-
-func (p *Proxy) descriptor(serviceID int) (emission.Descriptor, bool) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	descriptor, found := p.descriptors[serviceID]
-	return descriptor, found
-}
-
-// The origin answering anything but 200 is a failure of the environment
-// or of the authoring (5.8).
-func (p *Proxy) fetch(ctx context.Context, url string) (origin.Response, error) {
-	fetched, err := p.origin.Get(ctx, url)
+	built, err := carousel.Build(descriptor, stsid)
 	if err != nil {
-		return origin.Response{}, err
+		delete(p.carousels, serviceID)
+		slog.Error("carousel not built; the proxy is armed only for the signaling channel", "serviceId",
+			serviceID, "error", err)
+		return
 	}
-	if fetched.Status != http.StatusOK {
-		return origin.Response{}, fmt.Errorf("GET %s answered %d", url, fetched.Status)
+	p.carousels[serviceID] = built
+	slog.Debug("carousel armed", "serviceId", serviceID, "objects", len(built.Objects),
+		"templates", len(built.Templates))
+}
+
+// Wakes the event loop without blocking.
+func (p *Proxy) signalChange() {
+	select {
+	case p.changed <- struct{}{}:
+	default:
 	}
-	return fetched, nil
+}
+
+func decodeTuning(payload []byte) (Tuning, error) {
+	var wire wireTuning
+	if err := json.Unmarshal(payload, &wire); err != nil {
+		return Tuning{}, err
+	}
+	if wire.ServiceID == nil || wire.RFChannelID == nil || wire.TunedAt == nil {
+		return Tuning{}, fmt.Errorf("serviceId, rfChannelId or tunedAt missing")
+	}
+	tunedAt, err := time.Parse(time.RFC3339, *wire.TunedAt)
+	if err != nil {
+		return Tuning{}, fmt.Errorf("tunedAt: %w", err)
+	}
+	return Tuning{ServiceID: *wire.ServiceID, RFChannelID: *wire.RFChannelID, TunedAt: tunedAt}, nil
 }
