@@ -1,6 +1,6 @@
-// Package topics builds the names of the transport layer topics this
-// service publishes and subscribes (implementation document, 2.3 and
-// Appendix A.2).
+// Package topics builds the names of the topics this service publishes and
+// subscribes: the transport layer ones (implementation document, 2.3 and
+// Appendix A.2) and the ones of aop-application-lifecycle-manager.
 package topics
 
 import (
@@ -15,10 +15,11 @@ const (
 	BAMT = "bamt"
 )
 
-// SLS fragment names the object proxy subscribes to.
+// SLS fragment names this service subscribes to.
 const (
 	STSID = "stsid"
 	USBD  = "usbd"
+	BALD  = "bald"
 )
 
 // Object events of 5.6.
@@ -28,9 +29,10 @@ const (
 )
 
 const (
-	llsBase = "tlm/lls"
-	slsBase = "tlm/sls"
-	tlBase  = "tlm"
+	llsBase       = "tlm/lls"
+	slsBase       = "tlm/sls"
+	tlBase        = "tlm"
+	lifecycleBase = "aop/application-lifecycle-manager"
 )
 
 // slsFragments are the metadataURI values that have a topic.
@@ -63,6 +65,30 @@ func SLS(serviceID int, fragment string) (string, bool) {
 // LLSFilter is the subscription filter of every LLS topic.
 func LLSFilter() string {
 	return llsBase + "/#"
+}
+
+// LLSTableFilter is the subscription filter of a table of every RF
+// channel: <lls>/+/{table}.
+func LLSTableFilter(table string) string {
+	return fmt.Sprintf("%s/+/%s", llsBase, table)
+}
+
+// LLSTable is the bsid and the table of an <lls> topic; false for any
+// other topic.
+func LLSTable(topic string) (int, string, bool) {
+	suffix, found := strings.CutPrefix(topic, LLSPrefix())
+	if !found {
+		return 0, "", false
+	}
+	bsidSegment, table, found := strings.Cut(suffix, "/")
+	if !found {
+		return 0, "", false
+	}
+	bsid, err := strconv.Atoi(bsidSegment)
+	if err != nil {
+		return 0, "", false
+	}
+	return bsid, table, true
 }
 
 // SLSFilter is the subscription filter of every SLS topic.
@@ -148,6 +174,53 @@ func Tuned() string {
 // Object is <tl>/object/{serviceId}/{event}.
 func Object(serviceID int, event string) string {
 	return fmt.Sprintf("%s/object/%d/%s", tlBase, serviceID, event)
+}
+
+// ObjectFilter is the subscription filter of an object event of every
+// service: <tl>/object/+/{event}.
+func ObjectFilter(event string) string {
+	return fmt.Sprintf("%s/object/+/%s", tlBase, event)
+}
+
+// ObjectEvent is the serviceId and the event of an object event topic;
+// false for any other topic.
+func ObjectEvent(topic string) (int, string, bool) {
+	suffix, found := strings.CutPrefix(topic, tlBase+"/object/")
+	if !found {
+		return 0, "", false
+	}
+	serviceSegment, event, found := strings.Cut(suffix, "/")
+	if !found {
+		return 0, "", false
+	}
+	serviceID, err := strconv.Atoi(serviceSegment)
+	if err != nil {
+		return 0, "", false
+	}
+	return serviceID, event, true
+}
+
+// ApplicationState is the change of state of an application, not
+// retained.
+func ApplicationState() string {
+	return lifecycleBase + "/application-state"
+}
+
+// GraphicsApplication is the broadcaster application of the graphics
+// layer, retained; empty is the Bootstrap Application.
+func GraphicsApplication() string {
+	return lifecycleBase + "/graphics-application"
+}
+
+// PresentApplications is the list of the PRESENT and STORED_PRESENT
+// applications of the tuned service, retained.
+func PresentApplications() string {
+	return lifecycleBase + "/present-applications"
+}
+
+// EndRequest is the request of the viewer to end the running application.
+func EndRequest() string {
+	return lifecycleBase + "/end-request"
 }
 
 // Scan is <tl>/scan.

@@ -1,5 +1,6 @@
 // Command aop-cc is the Common Core component of the platform: the
-// acquisition of the transport layer signaling and the object proxy.
+// acquisition of the transport layer signaling, the object proxy and the
+// application lifecycle manager.
 package main
 
 import (
@@ -19,8 +20,10 @@ import (
 	"github.com/multisens/aop-cc/internal/acquisition"
 	"github.com/multisens/aop-cc/internal/broker"
 	"github.com/multisens/aop-cc/internal/config"
+	"github.com/multisens/aop-cc/internal/lifecycle"
 	"github.com/multisens/aop-cc/internal/origin"
 	"github.com/multisens/aop-cc/internal/proxy"
+	"github.com/multisens/aop-cc/internal/storage"
 	"github.com/multisens/aop-cc/internal/topics"
 )
 
@@ -43,6 +46,8 @@ func main() {
 	defer stop()
 
 	client := broker.New(settings.MQTTURL, clientID)
+	store := storage.New(settings.RedisAddress)
+	defer store.Close()
 	origins := proxy.Origins{AppsDomain: settings.AppsDomain, PublicPort: settings.PublicPort}
 	objectProxy := proxy.New(origin.New(), time.Now, client, origins)
 	server, err := listen(settings.ObjectProxyPort, objectProxy.Handler())
@@ -60,6 +65,10 @@ func main() {
 	for _, filter := range []string{topics.LLSFilter(), topics.SLSFilter(), topics.EmissionFilter()} {
 		client.Subscribe(broker.Subscription{Filter: filter, Receive: signalingAcquisition.Receive})
 	}
+	lifecycleManager := lifecycle.New(client, store, origins, time.Now)
+	for _, filter := range lifecycle.Filters() {
+		client.Subscribe(broker.Subscription{Filter: filter, Receive: lifecycleManager.Receive})
+	}
 	if err := client.Connect(ctx); err != nil {
 		slog.Error("MQTT client not started", "error", err)
 		os.Exit(1)
@@ -71,6 +80,7 @@ func main() {
 	}
 	slog.Info("acquisition started", "signaling", settings.SignalingBaseURL.String())
 	go objectProxy.RunEvents(ctx)
+	go lifecycleManager.Run(ctx)
 	signalingAcquisition.Run(ctx)
 
 	shutdown(server, client)

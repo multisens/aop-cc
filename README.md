@@ -6,7 +6,10 @@ it acquires the transport layer signaling the broadcaster side serves over
 HTTP and distributes it inside the platform as retained MQTT messages. It also
 realizes `aop-transport-layer-object-proxy`: it serves the broadcast objects of
 each service with a carousel, subject to the passes of the carousel, and the
-origin of each Application Context ID.
+origin of each Application Context ID. And it realizes
+`aop-application-lifecycle-manager`: by the `@controlCode` of the BALD of the
+tuned service, it decides which broadcaster application replaces the Bootstrap
+Application in the graphics layer.
 
 ## Packages
 
@@ -17,6 +20,8 @@ origin of each Application Context ID.
 | `internal/acquisition` | the cycle: scan, then emission descriptor and SLS of each service |
 | `internal/proxy` | the object proxy: service family, application family, object events |
 | `internal/carousel` | S-TSID and descriptor joined; passes, expiry, templates, USBD, entry package |
+| `internal/lifecycle` | the application lifecycle manager: BALD, launch, end, associated origin |
+| `internal/storage` | the writes to Redis, only through the functions of the `tv30` library |
 | `internal/emission` | the emission descriptor and the count of the signaling channel passes |
 | `internal/retained` | last version published on each topic, in memory |
 | `internal/broker` | MQTT 5 publication, QoS 1, retained; subscription |
@@ -86,9 +91,35 @@ became available (or with a new `lastModified`), and
 `tlm/object/{serviceId}/expired` when it stops being available. A change of
 tuning emits no `expired`.
 
+## Application lifecycle manager
+
+It subscribes to `tlm/tuned`, `tlm/lls/+/slt` (the `globalServiceId` of each
+`serviceId`), `tlm/sls/+/bald`, `tlm/object/+/available`,
+`tlm/object/+/expired` and `aop/application-lifecycle-manager/end-request`.
+Only `TV30-Ginga-HTML5` entries inside `validFrom` and `validUntil` count; an
+entry outside them counts as not in the BALD.
+
+| BALD of the tuned service | Effect |
+|---|---|
+| an entry becomes `AUTOSTART` (or has no `controlCode`) | it is launched, ending the running one; of several at once, the last of the BALD |
+| the running entry becomes `DESTROY`, `KILL` or `STORED_REMOVE`, or leaves the BALD | it ends and the Bootstrap Application returns |
+| `PRESENT` or `STORED_PRESENT` | listed in `aop/application-lifecycle-manager/present-applications` |
+
+The `bbandEntryPointUrl` comes first; the `bcastEntryPointUrl` opens on the
+context origin and waits for the `available` event of its `contentLocation`.
+At a launch, the origin goes to `origins:associated` and the application to
+`session:current-app`, then `aop/application-lifecycle-manager/application-state`
+gets `started` and the retained
+`aop/application-lifecycle-manager/graphics-application` gets
+`{serviceContextId, appId, origin, url}`. At the end, `ended`, both removed
+from Redis and the empty `graphics-application`. An end request of the running
+application ends it, and it is not launched again while its `controlCode`
+stays the same. A change of tuning ends the running application. At start,
+`origins:associated` and `session:current-app` are cleared.
+
 ## Messages
 
-Every message is retained; clearing is the empty retained message. A failure
+Every message of the acquisition is retained; clearing is the empty retained message. A failure
 of the origin publishes and clears nothing. A fragment that is not JSON (or,
 for the MPD, well-formed XML) is not published. The schema of each topic is
 the broker's: a refused message is logged and not sent again until its
@@ -102,6 +133,7 @@ cleared by the next scan.
 | Variable | Meaning |
 |---|---|
 | `MQTT_HOST` | broker, `host` or `host:port` (default port 1883) |
+| `REDIS_HOST` | Redis with the `tv30` library, `host` or `host:port` (default port 6379) |
 | `SIGNALING_BASE_URL` | `<signaling>` of the broadcaster side, absolute, ending in `/` |
 | `OBJECT_PROXY_PORT` | port of the object proxy; the acquisition reaches it on `127.0.0.1` |
 | `OBJECT_PROXY_PUBLIC_PORT` | the same port as the browser reaches it, in the context origins and event URLs |
@@ -109,7 +141,7 @@ cleared by the next scan.
 | `LOG_LEVEL` | `ERROR`, `INFO` (default) or `DEBUG` |
 
 ```sh
-MQTT_HOST=localhost SIGNALING_BASE_URL=http://localhost:8082/signaling/ OBJECT_PROXY_PORT=8081 \
+MQTT_HOST=localhost REDIS_HOST=localhost SIGNALING_BASE_URL=http://localhost:8082/signaling/ OBJECT_PROXY_PORT=8081 \
     OBJECT_PROXY_PUBLIC_PORT=8081 APPS_DOMAIN=apps.localhost go run ./cmd/aop-cc
 ```
 
@@ -117,7 +149,7 @@ MQTT_HOST=localhost SIGNALING_BASE_URL=http://localhost:8082/signaling/ OBJECT_P
 
 ```sh
 docker build -t tv30-aop-cc .
-docker run --rm -e MQTT_HOST=mqtt-broker -e SIGNALING_BASE_URL=http://bcast-sim:8082/signaling/ \
+docker run --rm -e MQTT_HOST=mqtt-broker -e REDIS_HOST=redis -e SIGNALING_BASE_URL=http://bcast-sim:8082/signaling/ \
     -e OBJECT_PROXY_PORT=8081 -e OBJECT_PROXY_PUBLIC_PORT=8081 -e APPS_DOMAIN=apps.localhost tv30-aop-cc
 ```
 
@@ -127,6 +159,10 @@ docker run --rm -e MQTT_HOST=mqtt-broker -e SIGNALING_BASE_URL=http://bcast-sim:
 go vet ./...
 go test ./...
 ```
+
+The contract of `internal/storage` against the real functions runs with
+`TV30_REDIS_TEST=host:port`; `infra/redis/test/run.sh contract` starts the
+Redis and runs it.
 
 ## License
 

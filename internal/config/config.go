@@ -15,6 +15,7 @@ import (
 // Config is the checked environment of the service.
 type Config struct {
 	MQTTURL          *url.URL
+	RedisAddress     string
 	SignalingBaseURL *url.URL
 	ObjectProxyPort  int
 	// PublicPort is the port of the object proxy as the browser reaches
@@ -25,9 +26,10 @@ type Config struct {
 }
 
 const (
-	defaultMQTTPort = "1883"
-	maxPort         = 65535
-	maxDomainLength = 253 - 64
+	defaultMQTTPort  = "1883"
+	defaultRedisPort = "6379"
+	maxPort          = 65535
+	maxDomainLength  = 253 - 64
 )
 
 // A DNS label: letters, digits and '-', not at the ends.
@@ -39,10 +41,14 @@ var logLevels = map[string]slog.Level{
 	"DEBUG": slog.LevelDebug,
 }
 
-// Load reads MQTT_HOST, SIGNALING_BASE_URL, OBJECT_PROXY_PORT,
+// Load reads MQTT_HOST, REDIS_HOST, SIGNALING_BASE_URL, OBJECT_PROXY_PORT,
 // OBJECT_PROXY_PUBLIC_PORT, APPS_DOMAIN and LOG_LEVEL.
 func Load() (Config, error) {
 	mqttURL, err := mqttURL(os.Getenv("MQTT_HOST"))
+	if err != nil {
+		return Config{}, err
+	}
+	redisAddress, err := hostPort("REDIS_HOST", os.Getenv("REDIS_HOST"), defaultRedisPort)
 	if err != nil {
 		return Config{}, err
 	}
@@ -72,6 +78,7 @@ func Load() (Config, error) {
 	}
 	return Config{
 		MQTTURL:          mqttURL,
+		RedisAddress:     redisAddress,
 		SignalingBaseURL: signaling,
 		ObjectProxyPort:  proxyPort,
 		PublicPort:       publicPort,
@@ -82,14 +89,22 @@ func Load() (Config, error) {
 
 // MQTT_HOST is host or host:port, as in the other services.
 func mqttURL(host string) (*url.URL, error) {
-	if host == "" {
-		return nil, fmt.Errorf("MQTT_HOST is required")
-	}
-	address := host
-	if _, _, err := net.SplitHostPort(host); err != nil {
-		address = net.JoinHostPort(host, defaultMQTTPort)
+	address, err := hostPort("MQTT_HOST", host, defaultMQTTPort)
+	if err != nil {
+		return nil, err
 	}
 	return &url.URL{Scheme: "mqtt", Host: address}, nil
+}
+
+// host or host:port; without the port, defaultPort.
+func hostPort(name string, value string, defaultPort string) (string, error) {
+	if value == "" {
+		return "", fmt.Errorf("%s is required", name)
+	}
+	if _, _, err := net.SplitHostPort(value); err != nil {
+		return net.JoinHostPort(value, defaultPort), nil
+	}
+	return value, nil
 }
 
 // An absolute http(s) URL ending in '/'.
