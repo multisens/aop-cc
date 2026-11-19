@@ -8,8 +8,8 @@ import (
 	"strings"
 )
 
-// 5.4, "Origem por contexto de aplicação": ctx- and the first 16
-// hexadecimal digits of the SHA-256 of the appContextId in UTF-8.
+// The label of a context origin: ctx- and the first 16 hexadecimal digits of
+// the SHA-256 of the appContextId in UTF-8.
 const (
 	contextLabelPrefix = "ctx-"
 	contextHashDigits  = 16

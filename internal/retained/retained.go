@@ -1,7 +1,6 @@
 // Package retained keeps, in memory, the version last published on each
-// retained topic, so that only what changed is published again
-// (implementation document, 6.3, "Versão em memória"), and the topics found
-// retained on the broker at startup, so that they can be cleared.
+// retained topic, so that only what changed is published again, and the topics
+// found retained on the broker at startup, so that they can be cleared.
 package retained
 
 import (

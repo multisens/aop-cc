@@ -35,18 +35,18 @@ type serviceSnapshot struct {
 	tuning        *Tuning
 }
 
-// The path of the signaling channel, reserved in the service family (5.4).
+// The path of the signaling channel, reserved in the service family.
 const signalingPath = "sls"
 
-// errDeclared is the origin failing an object the S-TSID declares (5.8).
+// errDeclared is the origin failing an object the S-TSID declares.
 var errDeclared = errors.New("declared object not served by the origin")
 
 // Headers of the broadband path not passed on: hop-by-hop.
 var hopByHop = []string{"Connection", "Keep-Alive", "Transfer-Encoding", "Upgrade", "Trailer"}
 
-// Handler serves GET and HEAD: under a context origin, the application
-// family; otherwise /svc/{serviceId}/{path}, the service family. Any other
-// method is 405. The body of an error says the reason in text (5.8).
+// Handler serves GET and HEAD: under a context origin, the application family;
+// otherwise /svc/{serviceId}/{path}, the service family. Any other method is
+// 405. The body of an error says the reason in text.
 func (p *Proxy) Handler() http.Handler {
 	services := http.NewServeMux()
 	services.HandleFunc("GET /svc/{serviceId}/{path...}", p.serveService)
@@ -65,7 +65,7 @@ func (p *Proxy) Handler() http.Handler {
 	})
 }
 
-// 5.5, "Requisição à família de aplicação".
+// A request to the application family.
 func (p *Proxy) serveApplication(w http.ResponseWriter, r *http.Request, label string) {
 	tuned, tuning, ok := p.tunedCarousel()
 	if !ok {
@@ -98,7 +98,7 @@ func (p *Proxy) serveApplication(w http.ResponseWriter, r *http.Request, label s
 	p.serveFound(w, r, *match)
 }
 
-// 5.5, "Requisição à família de serviço", rows 1 to 8.
+// A request to the service family.
 func (p *Proxy) serveService(w http.ResponseWriter, r *http.Request) {
 	serviceID, err := strconv.Atoi(r.PathValue("serviceId"))
 	if err != nil {
@@ -147,8 +147,8 @@ func (p *Proxy) serveService(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "not in the carousel", http.StatusNotFound)
 }
 
-// 5.5, "Canal de sinalização": 404 before the first pass; then the package
-// of signaling.url unchanged, with Last-Modified at fim(c*).
+// The signaling channel: 404 before the first pass; then the package of
+// signaling.url unchanged, with Last-Modified at fim(c*).
 func (p *Proxy) serveSignaling(w http.ResponseWriter, r *http.Request, descriptor emission.Descriptor) {
 	passEnd, passed := descriptor.LastSignalingPassEnd(p.now())
 	if !passed {
@@ -208,8 +208,8 @@ func (p *Proxy) serveFound(w http.ResponseWriter, r *http.Request, match found) 
 	writeBody(w, r, http.StatusOK, body)
 }
 
-// 5.5, row 7: the origin decides; its 404 is passed on, as the live window
-// answers. The Content-Type is that of the origin (5.6).
+// A path of a fileTemplate: the origin decides; its 404 is passed on, as the
+// live window answers. The Content-Type is that of the origin.
 func (p *Proxy) passTemplate(w http.ResponseWriter, r *http.Request, served carousel.Carousel, location string) {
 	fetched, err := p.origin.Get(r.Context(), served.EmissionBaseURL+location)
 	if err != nil || fetched.Status >= http.StatusInternalServerError {
@@ -235,8 +235,8 @@ func (p *Proxy) passTemplate(w http.ResponseWriter, r *http.Request, served caro
 	writeBody(w, r, http.StatusOK, fetched.Body)
 }
 
-// 5.4: the broadband path, without the count of the passes and with the
-// headers of the origin.
+// The broadband path, without the count of the passes and with the headers
+// of the origin.
 func (p *Proxy) passBroadband(w http.ResponseWriter, r *http.Request, url string) {
 	fetched, err := p.origin.Get(r.Context(), url)
 	if err != nil {
@@ -281,8 +281,7 @@ func (p *Proxy) findApplicationObject(ctx context.Context, tuned carousel.Carous
 	return nil, nil
 }
 
-// The parts of an entry package, indexed once per version (5.5,
-// "Indexação de pacote de entrada").
+// The parts of an entry package, indexed once per version.
 func (p *Proxy) packageParts(ctx context.Context, served carousel.Carousel, object carousel.Object) (
 	[]carousel.Part, error) {
 	key := packageKey{
@@ -314,7 +313,7 @@ func (p *Proxy) packageParts(ctx context.Context, served carousel.Carousel, obje
 	return index, nil
 }
 
-// The package fetched again, and the part taken from it (5.5, step 3).
+// The package fetched again, and the part taken from it.
 func (p *Proxy) fetchPart(ctx context.Context, served carousel.Carousel, object carousel.Object,
 	location string) (carousel.Part, error) {
 	fetched, err := p.fetchDeclared(ctx, served.EmissionBaseURL+object.ContentLocation)
@@ -334,8 +333,8 @@ func (p *Proxy) fetchPart(ctx context.Context, served carousel.Carousel, object 
 		object.ContentLocation)
 }
 
-// The origin answering anything but 200 is a failure of the environment
-// or of the authoring (5.8).
+// The origin answering anything but 200 is a failure of the environment or of
+// the authoring.
 func (p *Proxy) fetch(ctx context.Context, url string) (origin.Response, error) {
 	fetched, err := p.origin.Get(ctx, url)
 	if err != nil {
@@ -394,7 +393,7 @@ func contextOfLabel(tuned carousel.Carousel, label string) (string, bool) {
 	return "", false
 }
 
-// If-Modified-Since at or after Last-Modified (5.6).
+// If-Modified-Since at or after Last-Modified.
 func notModified(r *http.Request, lastModified time.Time) bool {
 	since, err := http.ParseTime(r.Header.Get("If-Modified-Since"))
 	if err != nil {

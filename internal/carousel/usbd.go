@@ -43,7 +43,7 @@ func DecodeUsbd(body []byte) (BasePatterns, error) {
 	return patterns, nil
 }
 
-// IsBroadband applies 5.4, "Resolução por BasePattern": only with both
+// IsBroadband resolves a URL by the BasePattern of the USBD: only with both
 // kinds of pattern; the longest pattern contained in the URL wins, and a
 // tie, or no match, is broadcast.
 func (p BasePatterns) IsBroadband(url string) bool {

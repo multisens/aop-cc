@@ -1,8 +1,8 @@
-// Package proxy is aop-transport-layer-object-proxy (implementation
-// document, Section 5): it serves the signaling channel of each service
-// with a carousel, the objects of the carousel of the tuned service under
-// the service family and under the origin of each Application Context ID,
-// subject to the count of the passes, and emits the object events.
+// Package proxy is aop-transport-layer-object-proxy: it serves the signaling
+// channel of each service with a carousel, the objects of the carousel of the
+// tuned service under the service family and under the origin of each
+// Application Context ID, subject to the count of the passes, and emits the
+// object events.
 package proxy
 
 import (
@@ -31,7 +31,7 @@ type Origins struct {
 	PublicPort int
 }
 
-// Proxy keeps what it subscribes to (5.2, 5.3) and serves HTTP.
+// Proxy keeps what it subscribes to and serves HTTP.
 type Proxy struct {
 	origin      *origin.Client
 	now         func() time.Time
@@ -47,7 +47,7 @@ type Proxy struct {
 	changed     chan struct{}
 }
 
-// Tuning is the content of <tl>/tuned (5.2).
+// Tuning is the content of <tl>/tuned.
 type Tuning struct {
 	ServiceID   int
 	RFChannelID int
@@ -187,7 +187,7 @@ func (p *Proxy) receiveTuning(payload []byte) {
 }
 
 // With the descriptor and the S-TSID, the carousel of the service; without
-// either, none (2.2, steps 3 and 5). Called with the lock held.
+// either, none. Called with the lock held.
 func (p *Proxy) rebuild(serviceID int) {
 	descriptor, hasDescriptor := p.descriptors[serviceID]
 	stsid, hasStsid := p.stsids[serviceID]

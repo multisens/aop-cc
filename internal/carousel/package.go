@@ -19,8 +19,8 @@ type Part struct {
 }
 
 // Parts reads an entry package (ATSC A/331, A.3.3.4). A part whose
-// Content-Location is not relative, or starts with '/' or '..', is left out
-// and logged (5.5, "Indexação de pacote de entrada").
+// Content-Location is not relative, or starts with '/' or '..', is left out and
+// logged.
 func Parts(contentType string, body []byte) ([]Part, error) {
 	mediaType, params, err := mime.ParseMediaType(contentType)
 	if err != nil {

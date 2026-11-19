@@ -1,5 +1,5 @@
-// Package emission decodes the emission descriptor (implementation
-// document, 3.7) and counts the passes of the signaling channel (5.3).
+// Package emission decodes the emission descriptor and counts the passes of the
+// signaling channel.
 package emission
 
 import (
@@ -98,9 +98,8 @@ func Decode(body []byte) (Descriptor, error) {
 	}, nil
 }
 
-// LastSignalingPassEnd is fim(c*) of the signaling count (5.3): the end of
-// the last complete pass of the SLS package; false before the first one
-// ends.
+// LastSignalingPassEnd is fim(c*) of the signaling count: the end of the last
+// complete pass of the SLS package; false before the first one ends.
 func (d Descriptor) LastSignalingPassEnd(now time.Time) (time.Time, bool) {
 	period := d.Signaling.CyclePeriod
 	elapsed := now.Sub(d.CycleEpoch)

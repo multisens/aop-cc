@@ -1,6 +1,5 @@
-// Package lls is aop-transport-layer-metadata-lls: the scan of the LLS
-// tables of every RF channel and their publication, one retained topic per
-// table (implementation document, 6.3, "Varredura de LLS").
+// Package lls is aop-transport-layer-metadata-lls: the scan of the LLS tables
+// of every RF channel and their publication, one retained topic per table.
 package lls
 
 import (
@@ -207,7 +206,7 @@ func (a *Acquirer) clear(ctx context.Context, topic string) {
 }
 
 // The topic name and the content of a table; an empty name for an unknown
-// LLS_table_id, which is ignored (6.4).
+// LLS_table_id, which is ignored.
 func tableContent(entry table) (string, json.RawMessage) {
 	switch *entry.ID {
 	case tableIDSLT:

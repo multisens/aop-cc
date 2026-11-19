@@ -156,8 +156,8 @@ func (p *Proxy) emit(ctx context.Context, tuned carousel.Carousel, entry eventOb
 	slog.Debug("object event", "topic", topic, "contentLocation", entry.location)
 }
 
-// The URL of the object in the proxy, by the family of 5.4: the origin of
-// its first Application Context ID, or the service family.
+// The URL of the object in the proxy: under the origin of its first
+// Application Context ID, or else under the service family.
 func (p *Proxy) objectURL(serviceID int, entry eventObject) string {
 	if len(entry.object.AppContextIDs) > 0 {
 		return p.origins.ContextOrigin(entry.object.AppContextIDs[0]) + "/" + entry.location

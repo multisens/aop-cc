@@ -1,6 +1,5 @@
-// Package sls is aop-transport-layer-metadata-sls: the acquisition of the
-// SLS package of a service and its publication, one retained topic per
-// fragment (implementation document, 6.2 and 6.3, "SLS").
+// Package sls is aop-transport-layer-metadata-sls: the acquisition of the SLS
+// package of a service and its publication, one retained topic per fragment.
 package sls
 
 import (

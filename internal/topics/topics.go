@@ -1,6 +1,6 @@
 // Package topics builds the names of the topics this service publishes and
-// subscribes: the transport layer ones (implementation document, 2.3 and
-// Appendix A.2) and the ones of aop-application-lifecycle-manager.
+// subscribes: the transport layer ones and the ones of
+// aop-application-lifecycle-manager.
 package topics
 
 import (

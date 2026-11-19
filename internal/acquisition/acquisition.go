@@ -1,9 +1,9 @@
 // Package acquisition runs the cycle of the signaling acquisition: the LLS
-// scan, then, for each service of each RF channel due, the emission
-// descriptor and the SLS package (implementation document, 6.3). The SLS of
-// a service with an emission descriptor comes from the signaling channel of
-// the object proxy, at the ends of its passes; that of any other service,
-// from the Signaling Server, at the llsCyclePeriod of its channel.
+// scan, then, for each service of each RF channel due, the emission descriptor
+// and the SLS package. The SLS of a service with an emission descriptor comes
+// from the signaling channel of the object proxy, at the ends of its passes;
+// that of any other service, from the Signaling Server, at the llsCyclePeriod
+// of its channel.
 package acquisition
 
 import (
@@ -60,7 +60,7 @@ const (
 )
 
 // The period before the first scan succeeds, and after a failed one: the
-// default llsCyclePeriod of a channel declaration (3.2).
+// default llsCyclePeriod of a channel declaration.
 const defaultPeriod = 5 * time.Second
 
 const (
@@ -164,8 +164,7 @@ func (a *Acquisition) Receive(topic string, payload []byte) {
 }
 
 // AcquireSignalingChannels fetches the SLS package of each service with a
-// carousel whose pass ended (5.3, "Disponibilidade do canal de
-// sinalização") and gives the earliest next end; false without any
+// carousel whose pass ended and gives the earliest next end; false without any
 // carousel.
 func (a *Acquisition) AcquireSignalingChannels(ctx context.Context) (time.Time, bool) {
 	var earliest time.Time
@@ -184,8 +183,8 @@ func (a *Acquisition) AcquireSignalingChannels(ctx context.Context) (time.Time, 
 	return earliest, scheduled
 }
 
-// The descriptor first: it decides where the SLS comes from (6.3, "SLS").
-// A descriptor that could not be fetched keeps the previous decision.
+// The descriptor first: it decides where the SLS comes from. A descriptor that
+// could not be fetched keeps the previous decision.
 func (a *Acquisition) acquireService(ctx context.Context, service lls.Service) {
 	descriptor, outcome := a.acquireDescriptor(ctx, service.ServiceID)
 	switch outcome {
@@ -237,7 +236,7 @@ func (a *Acquisition) acquireSls(ctx context.Context, serviceID int, url string)
 }
 
 // 404 before the first pass and 503 from a proxy not armed are normal at
-// startup (6.4).
+// startup.
 func (a *Acquisition) acquireSignalingChannel(ctx context.Context, serviceID int) {
 	err := a.sls.Acquire(ctx, serviceID, a.signalingChannelURL(serviceID))
 	switch {
@@ -328,7 +327,7 @@ func (a *Acquisition) knownServices() []int {
 	return slices.Sorted(maps.Keys(known))
 }
 
-// <comporta>/svc/{serviceId}/sls (5.4).
+// <comporta>/svc/{serviceId}/sls.
 func (a *Acquisition) signalingChannelURL(serviceID int) string {
 	return a.proxyBase.JoinPath(proxyServicePath, strconv.Itoa(serviceID), proxySignaling).String()
 }

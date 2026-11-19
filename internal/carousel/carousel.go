@@ -1,7 +1,6 @@
-// Package carousel joins the S-TSID and the emission descriptor of a
-// service into its carousel: the enumerated objects, with their place in
-// the lap, and the file templates (implementation document, 3.6, 3.7). It
-// counts the passes of each object (5.3).
+// Package carousel joins the S-TSID and the emission descriptor of a service
+// into its carousel: the enumerated objects, with their place in the lap, and
+// the file templates. It counts the passes of each object.
 package carousel
 
 import (
@@ -133,7 +132,7 @@ func Build(descriptor emission.Descriptor, stsidBody []byte) (Carousel, error) {
 	return built, nil
 }
 
-// LastCompletePass is the pass c* of 5.3 that makes the object available:
+// LastCompletePass is the pass c* that makes the object available:
 // the last complete pass, begun at or after tunedAt and not expired; false
 // when there is none.
 func (o Object) LastCompletePass(now time.Time, tunedAt time.Time) (Pass, bool) {
@@ -154,7 +153,7 @@ func (o Object) LastCompletePass(now time.Time, tunedAt time.Time) (Pass, bool) 
 	return pass, true
 }
 
-// Expires is ini(c*) + X of 5.6; false without maxExpiresDelta.
+// Expires is ini(c*) + X, X being the maxExpiresDelta; false without it.
 func (o Object) Expires(pass Pass) (time.Time, bool) {
 	if !o.HasExpiry {
 		return time.Time{}, false
@@ -219,9 +218,9 @@ func (c Carousel) AppContextIDs() []string {
 	return ids
 }
 
-// The objects of a flow, with the appContextIdList of the flow summed to
-// that of the file (5.5); the filterCodes of a file prevail over those of
-// the flow (ATSC A/331, A.3.3.2.3).
+// The objects of a flow, with the appContextIdList of the flow summed to that
+// of the file; the filterCodes of a file prevail over those of the flow (ATSC
+// A/331, A.3.3.2.3).
 func flowObjects(descriptor emission.Descriptor, flow emission.Flow, instance wireInstance) []Object {
 	places := map[string]emission.Object{}
 	for _, object := range flow.Objects {
