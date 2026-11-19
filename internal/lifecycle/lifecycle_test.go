@@ -157,8 +157,9 @@ func (p *fakePublisher) states() []string {
 	return states
 }
 
+// The broadband entry point under the broadband origin of its context.
 func urlOf(appID string) string {
-	return "http://example.org/" + appID + "/index.html"
+	return testOrigins.BroadbandOrigin(contextA) + "/" + appID + "/index.html"
 }
 
 func TestAutostartLaunchesAndRegistersTheOrigin(t *testing.T) {
@@ -169,7 +170,7 @@ func TestAutostartLaunchesAndRegistersTheOrigin(t *testing.T) {
 	if publisher.graphics() != urlOf(appA) {
 		t.Fatalf("graphics %q", publisher.graphics())
 	}
-	if store.origins["http://example.org"] != scid {
+	if store.origins[testOrigins.BroadbandOrigin(contextA)] != scid {
 		t.Fatalf("origins %v", store.origins)
 	}
 	if store.current == nil || store.current.AppID != appA {
@@ -386,6 +387,19 @@ func TestStoredAutostartWaitsForTheCacheComplete(t *testing.T) {
 	defer delete(completion.complete, contextA)
 	manager.step()
 	if publisher.graphics() != testOrigins.ContextOrigin(contextA)+"/"+entryPoint {
+		t.Fatalf("graphics %q", publisher.graphics())
+	}
+}
+
+func TestBroadbandLaunchKeepsPathQueryAndFragment(t *testing.T) {
+	clock := t0
+	manager, publisher, _ := newTuned(t, &clock)
+	entry := fmt.Sprintf(`{"appId":"%s","appContextId":"%s","appType":"TV30-Ginga-HTML5","controlCode":"AUTOSTART",`+
+		`"bbandEntryPointUrl":"https://example.org:8443/a%%20b/index.html?lang=pt#start"}`, appA, contextA)
+	receiveBald(manager, entry)
+	manager.step()
+	want := testOrigins.BroadbandOrigin(contextA) + "/a%20b/index.html?lang=pt#start"
+	if publisher.graphics() != want {
 		t.Fatalf("graphics %q", publisher.graphics())
 	}
 }

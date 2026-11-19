@@ -103,6 +103,14 @@ func (o *fakeOrigin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "segment 7")
 	case strings.Contains(path, "/seg/"):
 		w.WriteHeader(http.StatusNotFound)
+	case strings.HasSuffix(path, "/web/index.html"):
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("ETag", `"pagina"`)
+		_, _ = fmt.Fprintf(w, "<html><HEAD><title>%s</title></HEAD><body></body></html>", r.URL.RawQuery)
+	case strings.HasSuffix(path, "/web/missing.html"):
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, "<html><head></head></html>")
 	default:
 		w.Header().Set("Content-Type", "application/octet-stream")
 		_, _ = io.WriteString(w, "content of "+path)
@@ -520,5 +528,98 @@ func TestApplicationFamilyServesTheCacheWhenTheCarouselDoesNot(t *testing.T) {
 	}
 	if response := f.getApp(contextA, "/nada.txt"); response.Code != http.StatusNotFound {
 		t.Fatalf("not in the carousel nor in the cache: %d", response.Code)
+	}
+}
+
+// The broadband application of context A on the fake origin, in the BALD of
+// the tuned service.
+func (f *fixture) receiveBroadbandBald() {
+	bald := fmt.Sprintf(`{"EntryPackage":[{"appId":"urn:sbtvd:app:1002:web","appContextId":"%s",`+
+		`"bbandEntryPointUrl":"%s/web/index.html"}]}`, contextA, f.url)
+	f.proxy.Receive(fmt.Sprintf("tlm/sls/%d/bald", serviceID), []byte(bald))
+}
+
+func (f *fixture) getBroadband(appContextID string, path string) *httptest.ResponseRecorder {
+	host := fmt.Sprintf("%s.%s:%d", BroadbandLabel(appContextID), appsDomain, publicPort)
+	return f.request(http.MethodGet, host, path)
+}
+
+func TestBridgeIsInsertedInHtmlDocuments(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"before </head>", "<html><Head></HEAD><body></body></html>",
+			"<html><Head>" + bridgeElement + "</HEAD><body></body></html>"},
+		{"before <body", "<p>a</p><BODY>b", "<p>a</p>" + bridgeElement + "<BODY>b"},
+		{"at the end", "<p>pacote</p>", "<p>pacote</p>" + bridgeElement},
+	}
+	for _, c := range cases {
+		if got := string(withBridge("text/html; charset=utf-8", []byte(c.in))); got != c.want {
+			t.Fatalf("%s: %q", c.name, got)
+		}
+	}
+	if got := string(withBridge("text/plain", []byte("<head></head>"))); got != "<head></head>" {
+		t.Fatalf("text/plain changed: %q", got)
+	}
+}
+
+func TestApplicationOriginsServeTheBridgeAndCarryItInHtml(t *testing.T) {
+	f := setup(t)
+	f.arm(epoch)
+	f.receiveBroadbandBald()
+	f.instant = at(time.Minute)
+	for _, response := range []*httptest.ResponseRecorder{
+		f.getApp(contextA, bridgePath), f.getBroadband(contextA, bridgePath),
+	} {
+		if response.Code != http.StatusOK || response.Body.String() != string(bridgeScript) ||
+			response.Header().Get("Content-Type") != bridgeContentType {
+			t.Fatalf("bridge: %d %q", response.Code, response.Header().Get("Content-Type"))
+		}
+	}
+	part := f.getApp(contextA, "/index.html")
+	if part.Body.String() != "<p>pacote</p>"+bridgeElement ||
+		part.Header().Get("Content-Length") != fmt.Sprint(part.Body.Len()) {
+		t.Fatalf("HTML part: %q %q", part.Body.String(), part.Header().Get("Content-Length"))
+	}
+	if script := f.getApp(contextA, "/app.js"); script.Body.String() != "run();" {
+		t.Fatalf("script changed: %q", script.Body.String())
+	}
+	stored := storage.CachedFile{ContentType: "text/html", LastModified: at(-time.Hour), Body: []byte("<p>c</p>")}
+	f.cache.files[contextA+" guardado.html"] = stored
+	if cached := f.getApp(contextA, "/guardado.html"); cached.Body.String() != "<p>c</p>"+bridgeElement {
+		t.Fatalf("cached HTML: %q", cached.Body.String())
+	}
+}
+
+func TestBroadbandOriginPassesOnToTheServerOfTheApplication(t *testing.T) {
+	f := setup(t)
+	f.arm(epoch)
+	f.receiveBroadbandBald()
+	page := f.getBroadband(contextA, "/web/index.html?lang=pt")
+	want := "<html><HEAD><title>lang=pt</title>" + bridgeElement + "</HEAD><body></body></html>"
+	if page.Code != http.StatusOK || page.Body.String() != want ||
+		page.Header().Get("Content-Type") != "text/html; charset=utf-8" {
+		t.Fatalf("entry point: %d %q", page.Code, page.Body.String())
+	}
+	if page.Header().Get("ETag") != "" {
+		t.Fatalf("ETag of the server on the changed body: %q", page.Header().Get("ETag"))
+	}
+	other := f.getBroadband(contextA, "/web/style.css")
+	if other.Code != http.StatusOK || other.Body.String() != "content of /web/style.css" ||
+		other.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("other file: %d %q", other.Code, other.Body.String())
+	}
+	missing := f.getBroadband(contextA, "/web/missing.html")
+	if missing.Code != http.StatusNotFound || strings.Contains(missing.Body.String(), bridgeElement) {
+		t.Fatalf("error of the server: %d %q", missing.Code, missing.Body.String())
+	}
+	if unknown := f.getBroadband(contextB, "/web/index.html"); unknown.Code != http.StatusNotFound {
+		t.Fatalf("context without broadband application: %d", unknown.Code)
+	}
+	f.proxy.Receive("tlm/tuned", []byte(`{"serviceId":1003,"rfChannelId":10,"tunedAt":"2026-01-01T00:00:00Z"}`))
+	if untuned := f.getBroadband(contextA, "/web/index.html"); untuned.Code != http.StatusNotFound {
+		t.Fatalf("BALD of a service not tuned: %d", untuned.Code)
 	}
 }

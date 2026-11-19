@@ -46,14 +46,16 @@ var errDeclared = errors.New("declared object not served by the origin")
 var hopByHop = []string{"Connection", "Keep-Alive", "Transfer-Encoding", "Upgrade", "Trailer"}
 
 // Handler serves GET and HEAD: under a context origin, the application family;
-// otherwise /svc/{serviceId}/{path}, the service family. Any other method is
-// 405. The body of an error says the reason in text.
+// under a broadband origin, the server of the broadband application; under
+// both, the bridge at its path; otherwise /svc/{serviceId}/{path}, the service
+// family. Any other method is 405. The body of an error says the reason in
+// text.
 func (p *Proxy) Handler() http.Handler {
 	services := http.NewServeMux()
 	services.HandleFunc("GET /svc/{serviceId}/{path...}", p.serveService)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		label, isContext := p.origins.hostContextLabel(r.Host)
-		if !isContext {
+		label, isApplication := p.origins.hostLabel(r.Host)
+		if !isApplication {
 			services.ServeHTTP(w, r)
 			return
 		}
@@ -62,7 +64,14 @@ func (p *Proxy) Handler() http.Handler {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		p.serveApplication(w, r, label)
+		switch {
+		case r.URL.Path == bridgePath:
+			serveBridge(w, r)
+		case strings.HasPrefix(label, broadbandLabelPrefix):
+			p.serveBroadband(w, r, label)
+		default:
+			p.serveApplication(w, r, label)
+		}
 	})
 }
 
@@ -100,7 +109,8 @@ func (p *Proxy) serveApplication(w http.ResponseWriter, r *http.Request, label s
 }
 
 // The file of the Application Context Cache, with the Content-Type and the
-// Last-Modified it was stored with; 404 with reason when it is not there.
+// Last-Modified it was stored with, and the bridge in an HTML document; 404
+// with reason when it is not there.
 func (p *Proxy) serveCached(w http.ResponseWriter, r *http.Request, appContextID string, location string,
 	reason string) {
 	file, found, err := p.cache.File(r.Context(), appContextID, location)
@@ -122,8 +132,9 @@ func (p *Proxy) serveCached(w http.ResponseWriter, r *http.Request, appContextID
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
-	header.Set("Content-Length", strconv.Itoa(len(file.Body)))
-	writeBody(w, r, http.StatusOK, file.Body)
+	body := withBridge(file.ContentType, file.Body)
+	header.Set("Content-Length", strconv.Itoa(len(body)))
+	writeBody(w, r, http.StatusOK, body)
 }
 
 // A request to the service family.
@@ -197,7 +208,7 @@ func (p *Proxy) serveSignaling(w http.ResponseWriter, r *http.Request, descripto
 }
 
 // The bytes of an enumerated object, or of a part, with the headers of
-// 5.6.
+// 5.6 and the bridge in an HTML document.
 func (p *Proxy) serveFound(w http.ResponseWriter, r *http.Request, match found) {
 	body := []byte{}
 	contentType := match.object.ContentType
@@ -222,6 +233,7 @@ func (p *Proxy) serveFound(w http.ResponseWriter, r *http.Request, match found) 
 		body = fetched.Body
 		contentType = withPackageParameters(contentType, fetched.ContentType)
 	}
+	body = withBridge(contentType, body)
 	header := w.Header()
 	header.Set("Content-Type", contentType)
 	header.Set("Access-Control-Allow-Origin", "*")
@@ -281,20 +293,36 @@ func (p *Proxy) passTemplate(w http.ResponseWriter, r *http.Request, served caro
 // The broadband path, without the count of the passes and with the headers
 // of the origin.
 func (p *Proxy) passBroadband(w http.ResponseWriter, r *http.Request, url string) {
+	fetched, fetchedOK := p.fetchBroadband(w, r, url)
+	if !fetchedOK {
+		return
+	}
+	passOn(w, r, fetched, fetched.Body)
+}
+
+// The response of a broadband server, any status; false, with 502 answered,
+// when there is none.
+func (p *Proxy) fetchBroadband(w http.ResponseWriter, r *http.Request, url string) (origin.Response, bool) {
 	fetched, err := p.origin.Get(r.Context(), url)
 	if err != nil {
 		slog.Error("broadband object not served", "url", url, "error", err)
 		http.Error(w, "origin failed", http.StatusBadGateway)
-		return
+		return origin.Response{}, false
 	}
+	return fetched, true
+}
+
+// The status and the headers of the server, but the hop-by-hop ones, with
+// the body given.
+func passOn(w http.ResponseWriter, r *http.Request, fetched origin.Response, body []byte) {
 	header := w.Header()
 	for name, values := range fetched.Header {
 		if !slices.Contains(hopByHop, http.CanonicalHeaderKey(name)) {
 			header[name] = values
 		}
 	}
-	header.Set("Content-Length", strconv.Itoa(len(fetched.Body)))
-	writeBody(w, r, fetched.Status, fetched.Body)
+	header.Set("Content-Length", strconv.Itoa(len(body)))
+	writeBody(w, r, fetched.Status, body)
 }
 
 // The object of an application path: a file of the S-TSID in the context,

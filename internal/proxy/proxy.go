@@ -4,6 +4,9 @@
 // Application Context ID, subject to the count of the passes, and emits the
 // object events. Under the origin of an Application Context ID, what the
 // carousel does not offer now comes from the Application Context Cache.
+// Under the broadband origin of an Application Context ID, the server of its
+// broadband application. Every HTML document of an application origin
+// carries the bridge of the platform.
 package proxy
 
 import (
@@ -53,7 +56,9 @@ type Proxy struct {
 	patterns    map[int]carousel.BasePatterns
 	tuning      *Tuning
 	packages    map[packageKey][]carousel.Part
-	changed     chan struct{}
+	// Servers of the broadband applications of each service, by label.
+	broadband map[int]map[string]string
+	changed   chan struct{}
 }
 
 // Tuning is the content of <tl>/tuned.
@@ -90,6 +95,7 @@ func New(client *origin.Client, now func() time.Time, events EventPublisher, ori
 		carousels:   map[int]carousel.Carousel{},
 		patterns:    map[int]carousel.BasePatterns{},
 		packages:    map[packageKey][]carousel.Part{},
+		broadband:   map[int]map[string]string{},
 		changed:     make(chan struct{}, 1),
 	}
 }
@@ -100,6 +106,7 @@ func Filters() []string {
 		topics.EmissionFilter(),
 		topics.SLSFragmentFilter(topics.STSID),
 		topics.SLSFragmentFilter(topics.USBD),
+		topics.SLSFragmentFilter(topics.BALD),
 		topics.Tuned(),
 	}
 }
@@ -121,6 +128,8 @@ func (p *Proxy) Receive(topic string, payload []byte) {
 		p.receiveStsid(serviceID, payload)
 	case isSls && fragment == topics.USBD:
 		p.receiveUsbd(serviceID, payload)
+	case isSls && fragment == topics.BALD:
+		p.receiveBald(serviceID, payload)
 	default:
 		slog.Error("message ignored: not a topic of the object proxy", "topic", topic)
 	}

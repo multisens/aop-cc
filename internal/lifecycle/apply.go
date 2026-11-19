@@ -154,16 +154,19 @@ func (m *Manager) launchPending(ctx context.Context) {
 	m.start(ctx, app)
 }
 
-// 10.1: with both entry points, the broadband one first; the broadcast
-// one opens on the origin of the Application Context ID and awaits its
-// entry point (the contentLocation of its object event).
+// 10.1: with both entry points, the broadband one first, on the broadband
+// origin of the Application Context ID with the path and query of the URL;
+// the broadcast one opens on the origin of the Application Context ID and
+// awaits its entry point (the contentLocation of its object event).
 func (m *Manager) launchOf(entry Entry, serviceContextID string) (Application, string, bool) {
 	app := Application{ServiceContextID: serviceContextID, AppID: entry.AppID}
 	if entry.BbandEntryPointURL != "" {
 		parsed, err := url.Parse(entry.BbandEntryPointURL)
 		if err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != "" {
-			app.Origin = parsed.Scheme + "://" + parsed.Host
-			app.URL = parsed.String()
+			app.Origin = m.origins.BroadbandOrigin(entry.AppContextID)
+			launched := url.URL{Path: parsed.Path, RawPath: parsed.RawPath, RawQuery: parsed.RawQuery,
+				Fragment: parsed.Fragment}
+			app.URL = app.Origin + launched.String()
 			return app, "", true
 		}
 		slog.Error("bbandEntryPointUrl is not an absolute HTTP URL", "appId", entry.AppID,
