@@ -1,4 +1,5 @@
-// Package broker publishes retained messages on the MQTT 5 broker.
+// Package broker publishes retained messages on the MQTT 5 broker and
+// delivers the messages of the subscribed topics.
 package broker
 
 import (
@@ -19,6 +20,14 @@ type Publisher interface {
 	Publish(ctx context.Context, topic string, payload []byte) error
 }
 
+// Subscription is a topic filter and the function that receives each
+// message on it, retained ones included; an empty payload is a cleared
+// topic.
+type Subscription struct {
+	Filter  string
+	Receive func(topic string, payload []byte)
+}
+
 // Client is a Publisher over a connection that reconnects by itself.
 type Client struct {
 	manager *autopaho.ConnectionManager
@@ -34,20 +43,38 @@ const (
 // outside the schema of the topic.
 var ErrRefused = errors.New("refused by the broker")
 
-// Connect starts the connection; Publish fails while it is down.
-func Connect(ctx context.Context, server *url.URL, clientID string) (*Client, error) {
+// Connect starts the connection and subscribes on every connection up;
+// Publish fails while it is down.
+func Connect(ctx context.Context, server *url.URL, clientID string, subscriptions []Subscription) (*Client,
+	error) {
+	router := paho.NewStandardRouter()
+	for _, subscription := range subscriptions {
+		receive := subscription.Receive
+		router.RegisterHandler(subscription.Filter, func(message *paho.Publish) {
+			receive(message.Topic, message.Payload)
+		})
+	}
 	manager, err := autopaho.NewConnection(ctx, autopaho.ClientConfig{
 		ServerUrls:                    []*url.URL{server},
 		KeepAlive:                     keepAliveSeconds,
 		CleanStartOnInitialConnection: true,
 		ReconnectBackoff:              func(int) time.Duration { return reconnectDelay },
-		OnConnectionUp: func(*autopaho.ConnectionManager, *paho.Connack) {
+		OnConnectionUp: func(manager *autopaho.ConnectionManager, _ *paho.Connack) {
 			slog.Info("connected to the MQTT broker", "server", server.Host)
+			subscribe(ctx, manager, subscriptions)
 		},
 		OnConnectError: func(err error) {
 			slog.Error("MQTT connection failed", "server", server.Host, "error", err)
 		},
-		ClientConfig: paho.ClientConfig{ClientID: clientID},
+		ClientConfig: paho.ClientConfig{
+			ClientID: clientID,
+			OnPublishReceived: []func(paho.PublishReceived) (bool, error){
+				func(received paho.PublishReceived) (bool, error) {
+					router.Route(received.Packet.Packet())
+					return true, nil
+				},
+			},
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -83,4 +110,27 @@ func (c *Client) Disconnect(ctx context.Context) error {
 // Done is closed when the connection manager stops.
 func (c *Client) Done() <-chan struct{} {
 	return c.manager.Done()
+}
+
+// A failed subscription is logged: the messages of that filter are lost
+// until the next connection.
+func subscribe(ctx context.Context, manager *autopaho.ConnectionManager, subscriptions []Subscription) {
+	if len(subscriptions) == 0 {
+		return
+	}
+	options := []paho.SubscribeOptions{}
+	for _, subscription := range subscriptions {
+		options = append(options, paho.SubscribeOptions{Topic: subscription.Filter, QoS: 1})
+	}
+	acknowledgement, err := manager.Subscribe(ctx, &paho.Subscribe{Subscriptions: options})
+	if err != nil {
+		slog.Error("MQTT subscription failed", "error", err)
+		return
+	}
+	for index, code := range acknowledgement.Reasons {
+		if code >= firstErrorCode {
+			slog.Error("MQTT subscription refused", "filter", options[index].Topic,
+				"reasonCode", fmt.Sprintf("0x%02x", code))
+		}
+	}
 }

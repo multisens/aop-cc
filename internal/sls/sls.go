@@ -52,9 +52,12 @@ const (
 	mpdType          = "application/dash+xml"
 )
 
-// ErrNotYet is the Signaling Server answering 503: the package does not
-// exist yet.
+// ErrNotYet is the origin answering 503: the package does not exist yet,
+// or the object proxy is not armed.
 var ErrNotYet = errors.New("SLS package not available yet")
+
+// ErrNotFound is the origin answering 404.
+var ErrNotFound = errors.New("SLS package not found")
 
 // New gives an Acquirer.
 func New(client *origin.Client, store *retained.Store) *Acquirer {
@@ -73,6 +76,8 @@ func (a *Acquirer) Acquire(ctx context.Context, serviceID int, url string) error
 	case http.StatusOK:
 	case http.StatusServiceUnavailable:
 		return ErrNotYet
+	case http.StatusNotFound:
+		return fmt.Errorf("GET %s: %w", url, ErrNotFound)
 	default:
 		return fmt.Errorf("GET %s answered %d", url, fetched.Status)
 	}

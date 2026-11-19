@@ -13,7 +13,7 @@ func TestFirstCyclePublishesEveryTableAndFragment(t *testing.T) {
 	acquisition.Cycle(context.Background())
 
 	assertTopics(t, publisher.topics(), []string{
-		"tlm/lls/10/slt", "tlm/lls/10/bamt", "tlm/scan", "tlm/emission/1001",
+		"tlm/lls/10/slt", "tlm/lls/10/bamt", "tlm/scan",
 		"tlm/sls/1001/usbd", "tlm/sls/1001/mpd", "tlm/sls/1001/bald",
 	})
 	if mpd, _ := publisher.last("tlm/sls/1001/mpd"); !strings.HasPrefix(mpd, "<MPD") {
@@ -54,7 +54,10 @@ func TestOriginDownTouchesNoTopic(t *testing.T) {
 
 func TestRemovedServiceClearsItsTopics(t *testing.T) {
 	side, publisher, clock, acquisition := setup(t)
+	side.setDescriptor(1001, descriptor(1001))
 	acquisition.Cycle(context.Background())
+	clock.advance(2 * time.Second)
+	acquisition.AcquireSignalingChannels(context.Background())
 	publisher.reset()
 
 	side.setChannels(channel(10, []int{}, false, defaultPeriodMs))
@@ -167,6 +170,7 @@ func TestSlowerChannelIsAcquiredOnlyWhenDue(t *testing.T) {
 
 func TestServiceWithoutDescriptorClearsTheTopic(t *testing.T) {
 	side, publisher, clock, acquisition := setup(t)
+	side.setDescriptor(1001, descriptor(1001))
 	acquisition.Cycle(context.Background())
 	publisher.reset()
 
@@ -174,4 +178,75 @@ func TestServiceWithoutDescriptorClearsTheTopic(t *testing.T) {
 	clock.advance(5 * time.Second)
 	acquisition.Cycle(context.Background())
 	assertCleared(t, publisher, "tlm/emission/1001")
+}
+
+func TestServiceWithCarouselGetsTheSlsOnlyFromTheSignalingChannel(t *testing.T) {
+	side, publisher, clock, acquisition := setup(t)
+	side.setDescriptor(1001, descriptor(1001))
+	acquisition.Cycle(context.Background())
+	next, scheduled := acquisition.AcquireSignalingChannels(context.Background())
+	if !scheduled || !next.Equal(cycleEpoch.Add(signalingMs*time.Millisecond)) {
+		t.Fatalf("next signaling channel acquisition at %v (scheduled: %v)", next, scheduled)
+	}
+	assertTopics(t, publisher.topics(), []string{"tlm/lls/10/slt", "tlm/lls/10/bamt", "tlm/scan",
+		"tlm/emission/1001"})
+
+	clock.instant = next
+	acquisition.AcquireSignalingChannels(context.Background())
+	if _, found := publisher.last("tlm/sls/1001/bald"); !found {
+		t.Fatalf("SLS not published at the end of the pass")
+	}
+	clock.advance(5 * time.Second)
+	acquisition.Cycle(context.Background())
+	if requests := side.requestsTo("/signaling/sls/1001"); requests != 0 {
+		t.Fatalf("Signaling Server requested %d times for a service with carousel", requests)
+	}
+}
+
+func TestChangeIsPublishedAtTheFirstPassEndAfterIt(t *testing.T) {
+	side, publisher, clock, acquisition := setup(t)
+	side.setDescriptor(1001, descriptor(1001))
+	acquisition.Cycle(context.Background())
+	clock.instant = cycleEpoch.Add(signalingMs * time.Millisecond)
+	acquisition.AcquireSignalingChannels(context.Background())
+	publisher.reset()
+
+	side.setPackage(1001, slsPackage(1, 1, 2))
+	clock.advance(signalingMs*time.Millisecond - time.Millisecond)
+	acquisition.AcquireSignalingChannels(context.Background())
+	if _, found := publisher.last("tlm/sls/1001/bald"); found {
+		t.Fatalf("SLS acquired before the end of the pass")
+	}
+	clock.advance(time.Millisecond)
+	acquisition.AcquireSignalingChannels(context.Background())
+	if _, found := publisher.last("tlm/sls/1001/bald"); !found {
+		t.Fatalf("changed bald not published at the end of the pass")
+	}
+}
+
+func TestSignalingChannelBeforeTheFirstPassPublishesNothing(t *testing.T) {
+	side, publisher, clock, acquisition := setup(t)
+	side.setDescriptor(1001, descriptor(1001))
+	side.setNotPassed(1001, true)
+	acquisition.Cycle(context.Background())
+	clock.instant = cycleEpoch.Add(signalingMs * time.Millisecond)
+	acquisition.AcquireSignalingChannels(context.Background())
+	assertNoSls(t, publisher)
+}
+
+func TestDescriptorGoneReturnsTheServiceToTheSignalingServer(t *testing.T) {
+	side, publisher, clock, acquisition := setup(t)
+	side.setDescriptor(1001, descriptor(1001))
+	acquisition.Cycle(context.Background())
+	publisher.reset()
+
+	side.setDescriptor(1001, "")
+	clock.advance(5 * time.Second)
+	acquisition.Cycle(context.Background())
+	if _, scheduled := acquisition.AcquireSignalingChannels(context.Background()); scheduled {
+		t.Fatalf("signaling channel still scheduled without descriptor")
+	}
+	if _, found := publisher.last("tlm/sls/1001/bald"); !found {
+		t.Fatalf("SLS not acquired from the Signaling Server")
+	}
 }

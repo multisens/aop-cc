@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -14,10 +15,14 @@ import (
 type Config struct {
 	MQTTURL          *url.URL
 	SignalingBaseURL *url.URL
+	ObjectProxyPort  int
 	LogLevel         slog.Level
 }
 
-const defaultMQTTPort = "1883"
+const (
+	defaultMQTTPort = "1883"
+	maxPort         = 65535
+)
 
 var logLevels = map[string]slog.Level{
 	"ERROR": slog.LevelError,
@@ -25,13 +30,18 @@ var logLevels = map[string]slog.Level{
 	"DEBUG": slog.LevelDebug,
 }
 
-// Load reads MQTT_HOST, SIGNALING_BASE_URL and LOG_LEVEL.
+// Load reads MQTT_HOST, SIGNALING_BASE_URL, OBJECT_PROXY_PORT and
+// LOG_LEVEL.
 func Load() (Config, error) {
 	mqttURL, err := mqttURL(os.Getenv("MQTT_HOST"))
 	if err != nil {
 		return Config{}, err
 	}
 	signaling, err := baseURL("SIGNALING_BASE_URL", os.Getenv("SIGNALING_BASE_URL"))
+	if err != nil {
+		return Config{}, err
+	}
+	proxyPort, err := port("OBJECT_PROXY_PORT", os.Getenv("OBJECT_PROXY_PORT"))
 	if err != nil {
 		return Config{}, err
 	}
@@ -43,7 +53,12 @@ func Load() (Config, error) {
 	if !known {
 		return Config{}, fmt.Errorf("LOG_LEVEL must be ERROR, INFO or DEBUG; got '%s'", levelName)
 	}
-	return Config{MQTTURL: mqttURL, SignalingBaseURL: signaling, LogLevel: level}, nil
+	return Config{
+		MQTTURL:          mqttURL,
+		SignalingBaseURL: signaling,
+		ObjectProxyPort:  proxyPort,
+		LogLevel:         level,
+	}, nil
 }
 
 // MQTT_HOST is host or host:port, as in the other services.
@@ -68,4 +83,13 @@ func baseURL(name string, value string) (*url.URL, error) {
 		return nil, fmt.Errorf("%s must end in '/'; got '%s'", name, value)
 	}
 	return parsed, nil
+}
+
+// A TCP port, 1 to 65535.
+func port(name string, value string) (int, error) {
+	number, err := strconv.Atoi(value)
+	if err != nil || number < 1 || number > maxPort {
+		return 0, fmt.Errorf("%s must be a TCP port; got '%s'", name, value)
+	}
+	return number, nil
 }

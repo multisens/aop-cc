@@ -41,8 +41,10 @@ type part struct {
 	version     int
 }
 
-// fakeEmission serves <sinal>/lls, /emission/{id} and /sls/{id}; an empty
-// package answers 503, an empty descriptor 404.
+// fakeEmission serves <sinal>/lls, /emission/{id} and /sls/{id}, and, in
+// place of the object proxy, /svc/{id}/sls with the same packages; an empty
+// package answers 503, an empty descriptor 404, a missing signaling channel
+// package 404. Each request path is counted.
 type fakeEmission struct {
 	mu          sync.Mutex
 	serverURL   string
@@ -50,6 +52,8 @@ type fakeEmission struct {
 	channels    []map[string]any
 	descriptors map[int]string
 	packages    map[int]string
+	notPassed   map[int]bool
+	requests    map[string]int
 }
 
 const (
@@ -57,7 +61,10 @@ const (
 	mpdType         = "application/dash+xml"
 	boundary        = "sls-test"
 	defaultPeriodMs = 5000
+	signalingMs     = 3000
 )
+
+var cycleEpoch = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 func (f *fakePublisher) Publish(_ context.Context, topic string, payload []byte) error {
 	if f.refuse[topic] {
@@ -120,6 +127,18 @@ func (e *fakeEmission) setDescriptor(serviceID int, body string) {
 	e.descriptors[serviceID] = body
 }
 
+func (e *fakeEmission) setNotPassed(serviceID int, notPassed bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.notPassed[serviceID] = notPassed
+}
+
+func (e *fakeEmission) requestsTo(path string) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.requests[path]
+}
+
 func (e *fakeEmission) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /signaling/lls", func(w http.ResponseWriter, _ *http.Request) {
@@ -140,10 +159,34 @@ func (e *fakeEmission) handler() http.Handler {
 		e.serve(w, r, e.descriptors, http.StatusNotFound, jsonType)
 	})
 	mux.HandleFunc("GET /signaling/sls/{id}", func(w http.ResponseWriter, r *http.Request) {
-		e.serve(w, r, e.packages, http.StatusServiceUnavailable,
-			fmt.Sprintf("multipart/related; type=%q; boundary=%s", jsonType, boundary))
+		e.serve(w, r, e.packages, http.StatusServiceUnavailable, packageType())
 	})
-	return mux
+	mux.HandleFunc("GET /svc/{id}/sls", func(w http.ResponseWriter, r *http.Request) {
+		e.serve(w, r, e.passedPackages(), http.StatusNotFound, packageType())
+	})
+	return e.counted(mux)
+}
+
+func (e *fakeEmission) counted(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		e.mu.Lock()
+		e.requests[r.URL.Path]++
+		e.mu.Unlock()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// The packages of the services whose signaling channel already passed.
+func (e *fakeEmission) passedPackages() map[int]string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	passed := map[int]string{}
+	for serviceID, body := range e.packages {
+		if !e.notPassed[serviceID] {
+			passed[serviceID] = body
+		}
+	}
+	return passed
 }
 
 func (e *fakeEmission) serve(w http.ResponseWriter, r *http.Request, bodies map[int]string, emptyStatus int,
@@ -179,19 +222,37 @@ func setup(t *testing.T) (*fakeEmission, *fakePublisher, *fakeClock, *Acquisitio
 	t.Helper()
 	side := &fakeEmission{
 		channels:    []map[string]any{channel(10, []int{1001}, true, defaultPeriodMs)},
-		descriptors: map[int]string{1001: `{"serviceId":1001}`},
+		descriptors: map[int]string{},
 		packages:    map[int]string{1001: slsPackage(1, 1, 1)},
+		notPassed:   map[int]bool{},
+		requests:    map[string]int{},
 	}
 	server := httptest.NewServer(side.handler())
 	t.Cleanup(server.Close)
 	side.serverURL = server.URL
-	base, err := url.Parse(server.URL + "/signaling/")
+	signalingBase, err := url.Parse(server.URL + "/signaling/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyBase, err := url.Parse(server.URL + "/")
 	if err != nil {
 		t.Fatal(err)
 	}
 	publisher := &fakePublisher{refuse: map[string]bool{}}
-	clock := &fakeClock{instant: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
-	return side, publisher, clock, New(base, publisher, clock.now)
+	clock := &fakeClock{instant: cycleEpoch.Add(time.Second)}
+	return side, publisher, clock, New(signalingBase, proxyBase, publisher, clock.now)
+}
+
+// An emission descriptor with the signaling channel counted from
+// cycleEpoch every signalingMs.
+func descriptor(serviceID int) string {
+	return fmt.Sprintf(`{"serviceId":%d,"emissionBaseUrl":"http://emission/services/%d/",`+
+		`"cycleEpoch":"%s","signaling":{"url":"http://emission/signaling/sls/%d","cyclePeriod":%d},"flows":[]}`,
+		serviceID, serviceID, cycleEpoch.Format(time.RFC3339), serviceID, signalingMs)
+}
+
+func packageType() string {
+	return fmt.Sprintf("multipart/related; type=%q; boundary=%s", jsonType, boundary)
 }
 
 // An RF channel with an SLT of the services and, if withBamt, a BAMT.

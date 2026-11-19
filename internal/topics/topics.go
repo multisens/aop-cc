@@ -1,8 +1,13 @@
 // Package topics builds the names of the transport layer topics this
-// service publishes (implementation document, 2.3 and Appendix A.2).
+// service publishes and subscribes (implementation document, 2.3 and
+// Appendix A.2).
 package topics
 
-import "fmt"
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
 
 // LLS table names, the last level of <lls>/{bsid}/{table}.
 const (
@@ -50,10 +55,33 @@ func SLSPrefix(serviceID int) string {
 
 // Emission is <tl>/emission/{serviceId}.
 func Emission(serviceID int) string {
-	return fmt.Sprintf("%s/emission/%d", tlBase, serviceID)
+	return fmt.Sprintf("%s%d", emissionPrefix(), serviceID)
+}
+
+// EmissionFilter is the subscription filter of every <tl>/emission topic.
+func EmissionFilter() string {
+	return emissionPrefix() + "+"
+}
+
+// EmissionServiceID is the serviceId of an <tl>/emission topic; false for
+// any other topic.
+func EmissionServiceID(topic string) (int, bool) {
+	suffix, found := strings.CutPrefix(topic, emissionPrefix())
+	if !found {
+		return 0, false
+	}
+	serviceID, err := strconv.Atoi(suffix)
+	if err != nil {
+		return 0, false
+	}
+	return serviceID, true
 }
 
 // Scan is <tl>/scan.
 func Scan() string {
 	return tlBase + "/scan"
+}
+
+func emissionPrefix() string {
+	return tlBase + "/emission/"
 }
