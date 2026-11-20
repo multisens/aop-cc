@@ -5,8 +5,8 @@ units `aop-transport-layer-metadata-lls` and `aop-transport-layer-metadata-sls`:
 it acquires the transport layer signaling the broadcaster side serves over
 HTTP and distributes it inside the platform as retained MQTT messages. It also
 realizes `aop-transport-layer-object-proxy`: it serves the broadcast objects of
-each service with a carousel, subject to the passes of the carousel, and the
-origin of each Application Context ID. It realizes
+each service with a carousel, subject to the passes of the carousel, the
+origin of each Application Context ID and that of its broadband application. It realizes
 `aop-application-context-cache`: it keeps the files of the stored
 applications. And it realizes `aop-application-lifecycle-manager`: by the `@controlCode` of the BALD of the
 tuned service, it decides which broadcaster application replaces the Bootstrap
@@ -55,12 +55,13 @@ first scan and after a failed one):
 
 ## Object proxy
 
-It subscribes to `tlm/emission/+`, `tlm/sls/+/stsid`, `tlm/sls/+/usbd` and
-`tlm/tuned`. With the descriptor of a service it serves the signaling channel;
+It subscribes to `tlm/emission/+`, `tlm/sls/+/stsid`, `tlm/sls/+/usbd`,
+`tlm/sls/+/bald` and `tlm/tuned`. With the descriptor of a service it serves the signaling channel;
 with the S-TSID too, the other objects. Only `GET` and `HEAD`; any other method
 is `405`. The body of an error says the reason in text.
 
-**Service family**, `/svc/{serviceId}/{path}` on any host but a context origin:
+**Service family**, `/svc/{serviceId}/{path}` on any host but an application
+origin:
 
 | Request | Answer |
 |---|---|
@@ -86,6 +87,21 @@ package. Broadcast answers carry `Content-Type` of the S-TSID (or of the part),
 `Access-Control-Allow-Origin: *`; `If-Modified-Since` at or after
 `Last-Modified` gives `304`. The origin failing a declared object gives `502`,
 logged.
+
+**Broadband family**, any path on `http://bb-<h>.<APPS_DOMAIN>:<port>`, the same
+`<h>`: passed on to the scheme and host of the `bbandEntryPointUrl` of that
+`appContextId` in the BALD of the tuned service, with the path and query of the
+request, and answered with the status and headers of the server. Without such an
+entry, `404`.
+
+**Bridge**, `/.tv30/bridge.js` on both application families. Every HTML
+document those families serve (`200`) carries `<script src="/.tv30/bridge.js">`
+before `</head>`, or before `<body` without it, or at the end; the `ETag` of a
+broadband server does not go with a body so changed. The bridge dispatches on
+the document the keys, `timeupdate` and `stream_event` the platform sends by
+`postMessage` (`{type: 'tv30-aop-event', event, key | detail}`), and sends
+`{type: 'tv30-aop-back'}` to the platform for a `BrowserBack` no handler
+cancels.
 
 **Events**, not retained, for the files and parts of the tuned service:
 `tlm/object/{serviceId}/available` at the end of a pass after which the object
@@ -141,8 +157,9 @@ entry outside them counts as not in the BALD.
 | the running entry becomes `DESTROY`, `KILL` or `STORED_REMOVE`, or leaves the BALD | it ends and the Bootstrap Application returns |
 | `PRESENT` or `STORED_PRESENT` | listed in `aop/application-lifecycle-manager/present-applications` |
 
-The `bbandEntryPointUrl` comes first; the `bcastEntryPointUrl` opens on the
-context origin and waits for the `available` event of its `contentLocation`.
+The `bbandEntryPointUrl` comes first, on the broadband origin with its path,
+query and fragment; the `bcastEntryPointUrl` opens on the context origin and
+waits for the `available` event of its `contentLocation`.
 At a launch, the origin goes to `origins:associated` and the application to
 `session:current-app`, then `aop/application-lifecycle-manager/application-state`
 gets `started` and the retained
@@ -172,8 +189,8 @@ cleared by the next scan.
 | `REDIS_HOST` | Redis with the `tv30` library, `host` or `host:port` (default port 6379) |
 | `SIGNALING_BASE_URL` | `<signaling>` of the broadcaster side, absolute, ending in `/` |
 | `OBJECT_PROXY_PORT` | port of the object proxy; the acquisition reaches it on `127.0.0.1` |
-| `OBJECT_PROXY_PUBLIC_PORT` | the same port as the browser reaches it, in the context origins and event URLs |
-| `APPS_DOMAIN` | domain of the context origins, e.g. `apps.localhost` |
+| `OBJECT_PROXY_PUBLIC_PORT` | the same port as the browser reaches it, in the application origins and event URLs |
+| `APPS_DOMAIN` | domain of the application origins, e.g. `apps.localhost` |
 | `CACHE_PORT` | port of the routes of the Application Context Cache, reached on `127.0.0.1` |
 | `CACHE_QUOTA_BYTES` | quota of the cache by DTV service context (default 112000000) |
 | `CACHE_TOTAL_BYTES` | total of the cache (default 500000000) |
