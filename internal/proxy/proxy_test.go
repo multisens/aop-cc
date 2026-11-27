@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,6 +10,7 @@ import (
 	"mime"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -107,6 +110,30 @@ func (o *fakeOrigin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("ETag", `"pagina"`)
 		_, _ = fmt.Fprintf(w, "<html><HEAD><title>%s</title></HEAD><body></body></html>", r.URL.RawQuery)
+	case strings.HasSuffix(path, "/web/echo"):
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprintf(w, "%s %s %s", r.Method, r.Header.Get("X-Request"), body)
+	case strings.HasSuffix(path, "/web/old.html"):
+		http.Redirect(w, r, "/web/index.html", http.StatusFound)
+	case strings.HasSuffix(path, "/web/cached.js"):
+		w.Header().Set("ETag", `"v1"`)
+		if r.Header.Get("If-None-Match") == `"v1"` {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("Content-Type", "text/javascript")
+		_, _ = io.WriteString(w, "run();")
+	case strings.HasSuffix(path, "/web/gzip.html"):
+		w.Header().Set("Content-Type", "text/html")
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			_, _ = io.WriteString(w, "<html><head></head></html>")
+			return
+		}
+		w.Header().Set("Content-Encoding", "gzip")
+		compressed := gzip.NewWriter(w)
+		_, _ = io.WriteString(compressed, "<html><head></head></html>")
+		_ = compressed.Close()
 	case strings.HasSuffix(path, "/web/missing.html"):
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusNotFound)
@@ -286,6 +313,27 @@ func TestMethodOtherThanGetAndHeadIs405(t *testing.T) {
 	host := ContextLabel(contextA) + "." + appsDomain
 	if response := f.request(http.MethodPut, host, "/aviso.txt"); response.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("application family answered %d", response.Code)
+	}
+}
+
+func TestPreflightOfABroadcastObjectAllowsTheHeadersRequested(t *testing.T) {
+	f := setup(t)
+	f.arm(epoch)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodOptions, "/aviso.txt", nil)
+	request.Host = ContextLabel(contextA) + "." + appsDomain
+	request.Header.Set("Origin", "http://other.localhost")
+	request.Header.Set("Access-Control-Request-Method", http.MethodGet)
+	request.Header.Set("Access-Control-Request-Headers", "x-request")
+	f.proxy.Handler().ServeHTTP(recorder, request)
+	header := recorder.Header()
+	if recorder.Code != http.StatusNoContent || header.Get("Access-Control-Allow-Origin") != "*" ||
+		header.Get("Access-Control-Allow-Methods") != "GET, HEAD" ||
+		header.Get("Access-Control-Allow-Headers") != "x-request" {
+		t.Fatalf("preflight: %d %v", recorder.Code, header)
+	}
+	if f.origin.total() != 0 {
+		t.Fatalf("preflight reached the origin: %d requests", f.origin.total())
 	}
 }
 
@@ -540,8 +588,17 @@ func (f *fixture) receiveBroadbandBald() {
 }
 
 func (f *fixture) getBroadband(appContextID string, path string) *httptest.ResponseRecorder {
-	host := fmt.Sprintf("%s.%s:%d", BroadbandLabel(appContextID), appsDomain, publicPort)
-	return f.request(http.MethodGet, host, path)
+	return f.sendBroadband(http.MethodGet, appContextID, path, "", http.Header{})
+}
+
+func (f *fixture) sendBroadband(method string, appContextID string, path string, body string,
+	header http.Header) *httptest.ResponseRecorder {
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(method, path, bytes.NewBufferString(body))
+	request.Host = fmt.Sprintf("%s.%s:%d", BroadbandLabel(appContextID), appsDomain, publicPort)
+	request.Header = header
+	f.proxy.Handler().ServeHTTP(recorder, request)
+	return recorder
 }
 
 func TestBridgeIsInsertedInHtmlDocuments(t *testing.T) {
@@ -621,5 +678,69 @@ func TestBroadbandOriginPassesOnToTheServerOfTheApplication(t *testing.T) {
 	f.proxy.Receive("tlm/tuned", []byte(`{"serviceId":1003,"rfChannelId":10,"tunedAt":"2026-01-01T00:00:00Z"}`))
 	if untuned := f.getBroadband(contextA, "/web/index.html"); untuned.Code != http.StatusNotFound {
 		t.Fatalf("BALD of a service not tuned: %d", untuned.Code)
+	}
+}
+
+func TestBroadbandOriginPassesOnTheMethodTheHeadersAndTheBody(t *testing.T) {
+	f := setup(t)
+	f.arm(epoch)
+	f.receiveBroadbandBald()
+	header := http.Header{}
+	header.Set("X-Request", "form")
+	header.Set("Content-Type", "application/json")
+	posted := f.sendBroadband(http.MethodPost, contextA, "/web/echo", `{"a":1}`, header)
+	if posted.Code != http.StatusOK || posted.Body.String() != `POST form {"a":1}` {
+		t.Fatalf("POST: %d %q", posted.Code, posted.Body.String())
+	}
+	deleted := f.sendBroadband(http.MethodDelete, contextA, "/web/echo", "", http.Header{})
+	if deleted.Code != http.StatusOK || deleted.Body.String() != "DELETE  " {
+		t.Fatalf("DELETE: %d %q", deleted.Code, deleted.Body.String())
+	}
+}
+
+func TestBroadbandOriginPassesOnTheRedirectAndTheConditionalRequest(t *testing.T) {
+	f := setup(t)
+	f.arm(epoch)
+	f.receiveBroadbandBald()
+	redirected := f.getBroadband(contextA, "/web/old.html")
+	if redirected.Code != http.StatusFound || redirected.Header().Get("Location") != "/web/index.html" {
+		t.Fatalf("redirect: %d %q", redirected.Code, redirected.Header().Get("Location"))
+	}
+	first := f.getBroadband(contextA, "/web/cached.js")
+	if first.Code != http.StatusOK || first.Header().Get("ETag") != `"v1"` {
+		t.Fatalf("first: %d ETag %q", first.Code, first.Header().Get("ETag"))
+	}
+	header := http.Header{}
+	header.Set("If-None-Match", `"v1"`)
+	revalidated := f.sendBroadband(http.MethodGet, contextA, "/web/cached.js", "", header)
+	if revalidated.Code != http.StatusNotModified || revalidated.Body.Len() != 0 {
+		t.Fatalf("revalidation: %d %q", revalidated.Code, revalidated.Body.String())
+	}
+}
+
+func TestBroadbandOriginAddsTheBridgeToACompressedDocument(t *testing.T) {
+	f := setup(t)
+	f.arm(epoch)
+	f.receiveBroadbandBald()
+	header := http.Header{}
+	header.Set("Accept-Encoding", "gzip, br")
+	page := f.sendBroadband(http.MethodGet, contextA, "/web/gzip.html", "", header)
+	want := "<html><head>" + bridgeElement + "</head></html>"
+	if page.Code != http.StatusOK || page.Body.String() != want || page.Header().Get("Content-Encoding") != "" {
+		t.Fatalf("compressed document: %d %q, Content-Encoding %q", page.Code, page.Body.String(),
+			page.Header().Get("Content-Encoding"))
+	}
+}
+
+func TestBroadbandHeadCountsTheBridge(t *testing.T) {
+	f := setup(t)
+	f.arm(epoch)
+	f.receiveBroadbandBald()
+	page := f.getBroadband(contextA, "/web/index.html")
+	head := f.sendBroadband(http.MethodHead, contextA, "/web/index.html", "", http.Header{})
+	if head.Code != http.StatusOK || head.Body.Len() != 0 ||
+		head.Header().Get("Content-Length") != strconv.Itoa(page.Body.Len()) {
+		t.Fatalf("HEAD: %d, Content-Length %q, body of GET %d", head.Code, head.Header().Get("Content-Length"),
+			page.Body.Len())
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"mime"
 	"net/http"
@@ -42,14 +43,25 @@ const signalingPath = "sls"
 // errDeclared is the origin failing an object the S-TSID declares.
 var errDeclared = errors.New("declared object not served by the origin")
 
-// Headers of the broadband path not passed on: hop-by-hop.
-var hopByHop = []string{"Connection", "Keep-Alive", "Transfer-Encoding", "Upgrade", "Trailer"}
+// Headers of the broadband path not passed on, in either direction:
+// hop-by-hop.
+var hopByHop = []string{"Connection", "Keep-Alive", "Transfer-Encoding", "Upgrade", "Trailer", "Te",
+	"Proxy-Connection"}
 
-// Handler serves GET and HEAD: under a context origin, the application family;
-// under a broadband origin, the server of the broadband application; under
-// both, the bridge at its path; otherwise /svc/{serviceId}/{path}, the service
-// family. Any other method is 405. The body of an error says the reason in
-// text.
+// Headers of the request not passed on to a broadband server: the
+// hop-by-hop ones and Accept-Encoding, left to the client, which
+// decompresses the body before the bridge is added.
+var notForwarded = append(slices.Clone(hopByHop), "Accept-Encoding")
+
+// Methods of a broadcast object; OPTIONS is the CORS preflight.
+const broadcastMethods = "GET, HEAD"
+
+// Handler serves, under both application origins, the bridge at its path
+// (GET and HEAD); under a broadband origin, any method, passed on to the
+// server of the broadband application; under a context origin, the
+// application family (GET and HEAD) and the CORS preflight (OPTIONS);
+// otherwise /svc/{serviceId}/{path}, the service family (GET and HEAD). Any
+// other method is 405. The body of an error says the reason in text.
 func (p *Proxy) Handler() http.Handler {
 	services := http.NewServeMux()
 	services.HandleFunc("GET /svc/{serviceId}/{path...}", p.serveService)
@@ -59,20 +71,34 @@ func (p *Proxy) Handler() http.Handler {
 			services.ServeHTTP(w, r)
 			return
 		}
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			w.Header().Set("Allow", "GET, HEAD")
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
+		isRead := r.Method == http.MethodGet || r.Method == http.MethodHead
 		switch {
-		case r.URL.Path == bridgePath:
+		case r.URL.Path == bridgePath && isRead:
 			serveBridge(w, r)
 		case strings.HasPrefix(label, broadbandLabelPrefix):
 			p.serveBroadband(w, r, label)
+		case r.Method == http.MethodOptions:
+			servePreflight(w, r)
+		case !isRead:
+			w.Header().Set("Allow", broadcastMethods+", OPTIONS")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		default:
 			p.serveApplication(w, r, label)
 		}
 	})
+}
+
+// The CORS preflight of a broadcast object (ABNT NBR 25608, B.6.2): any
+// origin, the methods of a broadcast object and the headers requested.
+func servePreflight(w http.ResponseWriter, r *http.Request) {
+	header := w.Header()
+	header.Set("Access-Control-Allow-Origin", "*")
+	header.Set("Access-Control-Allow-Methods", broadcastMethods)
+	requested := r.Header.Get("Access-Control-Request-Headers")
+	if requested != "" {
+		header.Set("Access-Control-Allow-Headers", requested)
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // A request to the application family.
@@ -300,10 +326,25 @@ func (p *Proxy) passBroadband(w http.ResponseWriter, r *http.Request, url string
 	passOn(w, r, fetched, fetched.Body)
 }
 
-// The response of a broadband server, any status; false, with 502 answered,
-// when there is none.
+// The response of a broadband server to the request passed on (method,
+// headers and body; HEAD as GET, so that the length counts the bridge), any
+// status, a redirect included; false, with 502 answered, when there is none.
 func (p *Proxy) fetchBroadband(w http.ResponseWriter, r *http.Request, url string) (origin.Response, bool) {
-	fetched, err := p.origin.Get(r.Context(), url)
+	method := r.Method
+	if method == http.MethodHead {
+		method = http.MethodGet
+	}
+	header := r.Header.Clone()
+	for _, name := range notForwarded {
+		header.Del(name)
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		slog.Error("request body not read", "url", url, "error", err)
+		http.Error(w, "request body not read", http.StatusBadRequest)
+		return origin.Response{}, false
+	}
+	fetched, err := p.origin.Forward(r.Context(), method, url, header, body)
 	if err != nil {
 		slog.Error("broadband object not served", "url", url, "error", err)
 		http.Error(w, "origin failed", http.StatusBadGateway)
